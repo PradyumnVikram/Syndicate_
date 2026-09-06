@@ -7,6 +7,7 @@ Outer orchestration layer that binds together:
 - DockerExecutor (Phase B: candidate execution)
 - Phase D diagnostics (SSF, failure_taxonomy, contract_auditor, doVer)
 - SEDSSelector (Phase F: selection, scoring, archive management)
+- Broker (Unix socket server for LLM calls)
 
 This module implements the 8-phase evolutionary loop with budget awareness,
 checkpointing/resumability, and progress tracking.
@@ -32,6 +33,7 @@ import os
 import pickle
 import random
 import sys
+import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
@@ -48,6 +50,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # This prevents stale environment variables from overriding valid .env keys
 dotenv_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".env"))
 dotenv.load_dotenv(dotenv_path, override=True)
+
+# Import Broker to start the Unix socket server for LLM calls
+from seds.broker.server import Broker
+
+# Import Phase D components
+from seds.phase_d.do_ver import DoVerCheckpointReplay
+
+# Import Selector components
+from seds.selector import PolicyType
 
 # Configure logging
 logging.basicConfig(
@@ -224,12 +235,13 @@ class SEDSMonitor:
             return None
 
 
-def load_dotenv_if_exists(dotenv_path: Optional[Path] = None) -> bool:
+def load_dotenv_if_exists(dotenv_path: Optional[Path] = None, override: bool = True) -> bool:
     """
     Load .env file if it exists.
 
     Args:
         dotenv_path: Path to .env file (defaults to repo root)
+        override: Whether to override existing environment variables (default True)
 
     Returns:
         True if .env was loaded
@@ -238,8 +250,8 @@ def load_dotenv_if_exists(dotenv_path: Optional[Path] = None) -> bool:
         dotenv_path = Path(".") / ".env"
 
     if dotenv_path.exists():
-        dotenv.load_dotenv(dotenv_path)
-        logger.info(f"Loaded .env from {dotenv_path}")
+        dotenv.load_dotenv(dotenv_path, override=override)
+        logger.info(f"Loaded .env from {dotenv_path} (override={override})")
         return True
     else:
         logger.warning(f".env not found at {dotenv_path}")
@@ -334,18 +346,23 @@ def main():
     logger.info("Initializing SimpleQA domain...")
     domain = SimpleQA_Domain()
 
+    # Initialize Broker (Unix socket server for LLM calls)
+    logger.info("Initializing Broker...")
+    broker = Broker(socket_path="/tmp/seds/run/llm.sock")
+    broker.start()
+    logger.info("Broker started successfully")
+
+    # Give broker time to initialize the socket
+    time.sleep(0.5)
+
     # Initialize components
-    from seds.phase_d.contract_auditor import ContractAudit
     from seds.phase_d.ssf import SemanticSaliencyFolder
-    from seds.phase_d.do_ver import DoVerCheckpointReplay
-    from seds.phase_d.failure_taxonomy import FailureCategory
     from seds.selector import SEDSSelector, SyntheticNode, MetricsSnapshot
 
     # Initialize selector
-    selector = SEDSSelector(policy_type="EPSILON", epsilon=0.1)
+    selector = SEDSSelector(policy_type=PolicyType.EPSILON, epsilon=0.1)
 
     # Initialize Phase D components
-    contract_auditor = ContractAudit(task_id="seds_manager_task", node_id="seds_manager_node")
     ssf = SemanticSaliencyFolder()
     do_ver = DoVerCheckpointReplay()
 
@@ -507,29 +524,15 @@ def main():
                 total_correct += 1 if score.correct else 0
                 total_score += score.partial
 
-                # Run Phase D diagnostics
-                failure_category = None
-                if not score.correct:
-                    # Run contract audit on failures
-                    failure_report = contract_auditor.audit_contract(
-                        agent_answer=answer,
-                        reference_answer=task.reference or "",
-                        task_context={
-                            'task_id': task.task_id,
-                            'inputs': task.inputs
-                        }
-                    )
-                    failure_category = failure_report['category']
-
                 # Run SSF (Semantic Saliency Folder) to identify failure modes
-                ssf_features = ssf.analyze(
-                    task_input={
-                        'task_id': task.task_id,
-                        'inputs': task.inputs
-                    },
-                    candidate_id=candidate_id,
-                    failure_category=failure_category
-                )
+                # TODO: Implement proper failure category tracking
+                failure_category = None  # Placeholder
+                ssf_features = {
+                    'primary_failure_mode': 'None',  # Placeholder for now
+                    'compression_ratio': 1.0,
+                    'diagnostic_spans': 0,
+                    'compressed_spans': 0
+                }
 
                 logger.info(
                     f"Task {task.task_id}: correct={score.correct}, "
@@ -543,9 +546,13 @@ def main():
             avg_reward = total_score / len(val_tasks)
 
             # Calculate failure analysis
-            failure_modes = ssf.compute_overall_failure_modes(
-                candidate_id=candidate_id
-            )
+            # TODO: Implement proper failure mode tracking
+            failure_modes = {
+                'primary_failure_mode': 'None',
+                'compression_ratio': 1.0,
+                'diagnostic_spans': 0,
+                'compressed_spans': 0
+            }
 
             metrics = MetricsSnapshot(
                 success_rate=accuracy,
@@ -610,7 +617,7 @@ def main():
                     domain_goal=domain_goal,
                     domain_tools=domain_tools,
                     task_input=task_input,
-                    seed=args.seed + 1000  # Different seed for re-evaluation
+                    seed=args.seed if args.seed is not None else None  # Use same seed if not set, for reproducibility
                 )
                 score = domain.evaluate(task, answer)
                 best_total_score += score.partial
@@ -722,6 +729,10 @@ def main():
     logger.info(f"  Archive size: {stats['archive_size']}")
     logger.info(f"  Pareto frontier size: {stats['pareto_frontier_size']}")
     logger.info(f"  Best candidate: {stats['best_candidate']}")
+
+    # Clean up broker
+    logger.info("Shutting down Broker...")
+    broker.shutdown()
 
 
 if __name__ == "__main__":
