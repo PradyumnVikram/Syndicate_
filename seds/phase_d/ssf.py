@@ -1,490 +1,354 @@
-"""SEDS Phase D: Structured Search Framework (§6.3).
+"""SEDS Phase D: Semantic Saliency Folding (SSF).
 
-Provides structured search capabilities for:
-- Tool pattern search (finding effective tool usage patterns)
-- Rollout exploration (breadth-first search over agent actions)
-- Strategy composition (combining multiple search strategies)
+Provides semantic saliency folding for compression of execution traces by:
+- Identifying diagnostic content (diffs, errors) that must be preserved
+- Folding non-diagnostic content into lightweight placeholders
+- Achieving high compression ratios for large text blocks
 """
 from __future__ import annotations
 
-import copy
-import hashlib
-import logging
-import time
-from collections import defaultdict, deque
+import json
+import re
+import sys
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
-from enum import auto
+from typing import Any, Literal
 
 
-logger = logging.getLogger(__name__)
+# Patterns
+DIFF_PATTERN = re.compile(r'^---|\+\+\+|^@@', re.MULTILINE)
 
-
-@dataclass
-class SearchNode:
-    """Node in the search tree.
-
-    Each node represents a state in the search space.
-    """
-    node_id: str
-    task_id: str
-    parent_id: Optional[str]
-    depth: int
-    rollout_id: Optional[str]
-
-    # Search-specific state
-    action: Optional[dict[str, Any]] = None
-    heuristic_score: float = 0.0
-    explored: bool = False
-    expanded: bool = False
-
-    # Result data
-    answer: Optional[str] = None
-    score: Optional[dict[str, Any]] = None
-    spans: list[dict[str, Any]] = field(default_factory=list)
-
-    def __hash__(self):
-        return hash(self.node_id)
-
-    def __eq__(self, other):
-        return isinstance(other, SearchNode) and self.node_id == other.node_id
+# Failure-indicative keywords (based on failure taxonomy)
+# Using word boundaries with context phrases to avoid false positives
+FAILURE_KEYWORD_PATTERNS = [
+    r'\berror\s+message\b',   # "error message" (context)
+    r'\berror\s+code\b',      # "error code" (context)
+    r'\berror\s+type\b',      # "error type" (context)
+    r'\berror\s+object\b',    # "error object" (context)
+    r'\bfailed\s+assertion\b', # "failed assertion" (context)
+    r'\bfailed\s+test\b',     # "failed test" (context)
+    r'\bexception\s+trace\b', # "exception trace" (context)
+    r'\btimeout\s+error\b',   # "timeout error" (context)
+    r'\bcrash\s+report\b',    # "crash report" (context)
+    r'\bvalidation\s+error\b', # "validation error" (context)
+    r'\binvalid\s+value\b',   # "invalid value" (context)
+    r'\bstack\s+trace\b',     # "stack trace" (context)
+]
 
 
 @dataclass
-class SearchMetrics:
-    """Metrics tracked during search execution."""
-    total_nodes_expanded: int = 0
-    total_nodes_generated: int = 0
-    total_time_ms: int = 0
-    max_depth_reached: int = 0
-    successful_completions: int = 0
-    failed_attempts: int = 0
-    frontier_sizes: list[int] = field(default_factory=list)
+class SaliencyFoldedSpan:
+    """Folded span after applying semantic saliency folding.
 
-    def add_frontier_size(self, size: int):
-        """Record frontier size at this point."""
-        self.frontier_sizes.append(size)
-
-
-class SearchState:
-    """Abstract search state interface."""
-
-    @abstractmethod
-    def get_valid_actions(self) -> list[dict[str, Any]]:
-        """Get list of valid actions for this state.
-
-        Returns:
-            List of action dictionaries
-        """
-        pass
-
-    @abstractmethod
-    def apply_action(self, action: dict[str, Any]) -> 'SearchState':
-        """Apply an action and return the new state.
-
-        Args:
-            action: Action dictionary
-
-        Returns:
-            New state after applying the action
-        """
-        pass
-
-    @abstractmethod
-    def is_terminal(self) -> bool:
-        """Check if this state is terminal (solution found or dead end).
-
-        Returns:
-            True if terminal
-        """
-        pass
-
-    @abstractmethod
-    def get_heuristic_score(self) -> float:
-        """Get heuristic estimate of how close we are to solution.
-
-        Returns:
-            Heuristic score (higher is better)
-        """
-        pass
-
-    @abstractmethod
-    def extract_answer(self) -> Optional[str]:
-        """Extract final answer from this state.
-
-        Returns:
-            Answer string or None if not terminal
-        """
-        pass
-
-    @abstractmethod
-    def get_children(self) -> list['SearchState']:
-        """Get child states (expanding the current node).
-
-        Returns:
-            List of child states
-        """
-        pass
+    Attributes:
+        span_id: Original span identifier
+        kind: Type of span (e.g., "call", "error", "system")
+        content_type: Either "diagnostic" (must preserve) or "compressed" (can fold)
+        original_content: Original content before compression
+        compressed_content: Content after compression (same for diagnostic, placeholder for compressed)
+        metadata: Additional information about the folding decision
+    """
+    span_id: str
+    kind: str
+    content_type: Literal["diagnostic", "compressed"]
+    original_content: str
+    compressed_content: str
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
-class RolloutStrategy:
-    """Base class for rollout search strategies."""
+class SemanticSaliencyFolder:
+    """Folds execution traces by preserving diagnostic content and compressing non-diagnostic content.
 
-    @abstractmethod
-    def select_action(self, state: SearchState) -> Optional[dict[str, Any]]:
-        """Select an action from valid actions.
+    Uses regex patterns to identify:
+    - Code diff markers (---, +++, @@)
+    - Failure-indicative keywords
 
-        Args:
-            state: Current search state
-
-        Returns:
-            Selected action dict or None
-        """
-        pass
-
-    @abstractmethod
-    def expand_node(self, node: SearchNode, state: SearchState) -> list[SearchNode]:
-        """Expand a node by generating child nodes.
-
-        Args:
-            node: Node to expand
-            state: Current search state
-
-        Returns:
-            List of child nodes
-        """
-        pass
-
-    @abstractmethod
-    def should_continue_search(self, metrics: SearchMetrics) -> bool:
-        """Check if search should continue.
-
-        Args:
-            metrics: Current search metrics
-
-        Returns:
-            True if search should continue
-        """
-        pass
-
-
-class BreadthFirstStrategy(RolloutStrategy):
-    """Breadth-first search rollout strategy.
-
-    Explores states level by level, trying all valid actions before moving deeper.
-    Good for finding complete solutions with minimal depth.
+    Non-diagnostic content is replaced with lightweight JSON placeholders to achieve high compression ratios.
     """
 
-    def select_action(self, state: SearchState) -> Optional[dict[str, Any]]:
-        """Select first valid action (randomized)."""
-        valid_actions = state.get_valid_actions()
-        if not valid_actions:
-            return None
-        return valid_actions[0]  # Simplified - could randomize
-
-    def expand_node(self, node: SearchNode, state: SearchState) -> list[SearchNode]:
-        """Generate all child nodes by applying all valid actions."""
-        valid_actions = state.get_valid_actions()
-        children = []
-
-        for action in valid_actions:
-            new_state = state.apply_action(action)
-            child = SearchNode(
-                node_id=f"{node.node_id}_{hashlib.md5(str(action).encode()).hexdigest()[:8]}",
-                task_id=node.task_id,
-                parent_id=node.node_id,
-                depth=node.depth + 1,
-                rollout_id=node.rollout_id,
-                action=action,
-                heuristic_score=new_state.get_heuristic_score(),
-            )
-            children.append(child)
-
-        return children
-
-    def should_continue_search(self, metrics: SearchMetrics) -> bool:
-        """Continue until frontier is exhausted or time limit reached."""
-        return len(metrics.frontier_sizes) < 100  # Limit for demo
-
-
-class DepthFirstStrategy(RolloutStrategy):
-    """Depth-first search rollout strategy.
-
-    Explores one path deeply before backtracking. Good for quick solutions.
-    """
-
-    def __init__(self, max_depth: int = 5):
-        self.max_depth = max_depth
-
-    def select_action(self, state: SearchState) -> Optional[dict[str, Any]]:
-        """Select first valid action."""
-        valid_actions = state.get_valid_actions()
-        if not valid_actions:
-            return None
-        return valid_actions[0]
-
-    def expand_node(self, node: SearchNode, state: SearchState) -> list[SearchNode]:
-        """Generate single child by applying first valid action."""
-        valid_actions = state.get_valid_actions()
-        if not valid_actions:
-            return []
-
-        action = valid_actions[0]
-        new_state = state.apply_action(action)
-        child = SearchNode(
-            node_id=f"{node.node_id}_{hashlib.md5(str(action).encode()).hexdigest()[:8]}",
-            task_id=node.task_id,
-            parent_id=node.node_id,
-            depth=node.depth + 1,
-            rollout_id=node.rollout_id,
-            action=action,
-            heuristic_score=new_state.get_heuristic_score(),
-        )
-        return [child]
-
-    def should_continue_search(self, metrics: SearchMetrics) -> bool:
-        """Continue until depth limit reached."""
-        return metrics.max_depth_reached < self.max_depth
-
-
-class RolloutSearch:
-    """Rollout-based search with multiple strategies."""
-
-    def __init__(
-        self,
-        task_id: str,
-        initial_state: SearchState,
-        max_depth: int = 10,
-        max_frontier_size: int = 100,
-        strategies: Optional[list[RolloutStrategy]] = None
-    ):
+    def __init__(self, min_compression_ratio: float = 10.0):
         """
-        Initialize rollout search.
+        Initialize the semantic saliency folder.
 
         Args:
-            task_id: Task identifier
-            initial_state: Initial search state
-            max_depth: Maximum depth to search
-            max_frontier_size: Maximum frontier size for heap management
-            strategies: List of search strategies to use
+            min_compression_ratio: Minimum target compression ratio (default 10×)
         """
-        self.task_id = task_id
-        self.initial_state = initial_state
-        self.max_depth = max_depth
-        self.max_frontier_size = max_frontier_size
+        self.min_compression_ratio = min_compression_ratio
 
-        # Use default strategies if none provided
-        if strategies is None:
-            self.strategies = [
-                BreadthFirstStrategy(),
-                DepthFirstStrategy(max_depth=max_depth),
-            ]
+    def fold_span(self, span: dict[str, Any]) -> SaliencyFoldedSpan:
+        """
+        Fold a single span based on diagnostic content.
+
+        Extracts content from outputs.content field and checks for diagnostic markers.
+
+        Args:
+            span: TelemetrySpanV2-shaped span dict
+
+        Returns:
+            Folded span with diagnostic content preserved
+        """
+        span_id = span.get("span_id", "")
+        kind = span.get("kind", "unknown")
+
+        # Extract content from outputs.content field (primary location)
+        content = None
+        outputs = span.get("outputs", {})
+        if isinstance(outputs, dict):
+            content = outputs.get("content")
+
+        # Fallback: check direct content field
+        if content is None:
+            content = span.get("content")
+
+        # Fallback: check inputs.content
+        if content is None:
+            inputs = span.get("inputs", {})
+            if isinstance(inputs, dict):
+                content = inputs.get("content")
+
+        # Convert to string if None
+        if content is None:
+            span_text = ""
+        elif isinstance(content, str):
+            span_text = content
+        elif isinstance(content, dict):
+            span_text = json.dumps(content, default=str)
         else:
-            self.strategies = strategies
+            span_text = str(content)
 
-        # Search state
-        self.root = SearchNode(
-            node_id="root",
-            task_id=task_id,
-            parent_id=None,
-            depth=0,
-            rollout_id=None,
-        )
-        self.node_map: dict[str, SearchNode] = {self.root.node_id: self.root}
-        self.frontier: deque[SearchNode] = deque([self.root])
-
-        # Metrics
-        self.metrics = SearchMetrics()
-        self.start_time = time.time()
-
-        logger.debug(f"RolloutSearch initialized for task={task_id}")
-
-    def search(self, timeout_ms: int = 5000) -> tuple[Optional[str], list[dict[str, Any]]]:
-        """Execute search with timeout.
-
-        Args:
-            timeout_ms: Maximum time to search in milliseconds
-
-        Returns:
-            Tuple of (answer, spans) or (None, []) if no solution found
-        """
-        start_time = time.time()
-
-        while self.frontier:
-            # Check timeout
-            elapsed_ms = (time.time() - start_time) * 1000
-            if elapsed_ms > timeout_ms:
-                logger.warning(f"Search timeout after {elapsed_ms:.1f}ms")
-                break
-
-            # Get next node
-            node = self.frontier.popleft()
-            node.explored = True
-
-            # Create state from node
-            state = self._state_from_node(node)
-
-            # Check if terminal
-            if state.is_terminal():
-                answer = state.extract_answer()
-                spans = node.spans
-                self.metrics.successful_completions += 1
-                logger.info(f"Solution found: answer={answer[:50] if answer else 'None'}")
-                return answer, spans
-
-            # Expand node
-            if node.depth >= self.max_depth:
-                continue
-
-            # Apply each strategy
-            for strategy in self.strategies:
-                child_nodes = strategy.expand_node(node, state)
-                for child in child_nodes:
-                    # Avoid duplicates
-                    if child.node_id not in self.node_map:
-                        # Clone state for child
-                        new_state = state.apply_action(child.action)
-                        child.spans = new_state.get_spans() if hasattr(new_state, 'get_spans') else []
-
-                        self.node_map[child.node_id] = child
-                        self.frontier.append(child)
-                        self.metrics.total_nodes_generated += 1
-
-            self.metrics.total_nodes_expanded += 1
-            self.metrics.max_depth_reached = max(
-                self.metrics.max_depth_reached,
-                node.depth + 1
+        # Check if this span contains diagnostic content
+        if self._is_diagnostic_content(span_text):
+            folded_span = SaliencyFoldedSpan(
+                span_id=span_id,
+                kind=kind,
+                content_type='diagnostic',
+                original_content=span_text,
+                compressed_content=span_text,  # No compression for diagnostic content
+                metadata={"reason": "contains_diff_or_error"},
             )
-            self.metrics.add_frontier_size(len(self.frontier))
+        else:
+            # Compress non-diagnostic content
+            folded_span = SaliencyFoldedSpan(
+                span_id=span_id,
+                kind=kind,
+                content_type='compressed',
+                original_content=span_text,
+                compressed_content=self._create_placeholder(span_text),
+                metadata={"reason": "compressed_to_placeholder"},
+            )
 
-        # No solution found
-        elapsed_ms = (time.time() - start_time) * 1000
-        self.metrics.total_time_ms = int(elapsed_ms)
-        logger.info(f"Search finished: {self.metrics.total_nodes_expanded} nodes expanded")
+        return folded_span
 
-        return None, []
-
-    def _state_from_node(self, node: SearchNode) -> SearchState:
-        """Convert node to search state."""
-        # Create a mutable copy of initial state
-        state = copy.deepcopy(self.initial_state)
-
-        # Reconstruct path actions
-        current_id = node.parent_id
-        while current_id and current_id != "root":
-            parent = self.node_map[current_id]
-            state = state.apply_action(parent.action)
-            current_id = parent.parent_id
-
-        return state
-
-    def get_node(self, node_id: str) -> Optional[SearchNode]:
-        """Get node by ID."""
-        return self.node_map.get(node_id)
-
-    def get_metrics(self) -> SearchMetrics:
-        """Get search metrics."""
-        self.metrics.total_time_ms = int((time.time() - self.start_time) * 1000)
-        return self.metrics
-
-
-class PatternSearcher:
-    """Search for effective tool usage patterns in collected traces."""
-
-    def __init__(self):
-        """Initialize pattern searcher."""
-        self.tool_pattern_counts: dict[str, dict[str, int]] = defaultdict(dict)
-        self.successful_patterns: dict[str, dict[str, Any]] = {}
-        self.failure_patterns: dict[str, dict[str, Any]] = {}
-
-    def analyze_traces(
-        self,
-        traces: list[dict[str, Any]],
-        successful: bool = True
-    ):
-        """Analyze traces and extract patterns.
+    def fold_trace(self, trace: list[dict[str, Any]]) -> tuple[list[SaliencyFoldedSpan], dict[str, Any]]:
+        """
+        Fold an entire trace by folding each span and generate a report.
 
         Args:
-            traces: List of trace dictionaries
-            successful: True for successful traces, False for failures
+            trace: List of TelemetrySpanV2-shaped span dicts
+
+        Returns:
+            Tuple of (folded_spans, report)
         """
-        for trace in traces:
-            tool_calls = trace.get("spans", [])
-            for call in tool_calls:
-                tool_name = call.get("tool_name", "unknown")
-                if tool_name == "unknown":
-                    continue
+        folded_spans = []
+        for span in trace:
+            folded = self.fold_span(span)
+            folded_spans.append(folded)
 
-                # Extract pattern from call arguments
-                inputs = call.get("inputs", {})
-                pattern = self._extract_pattern_key(inputs)
+        report = self.generate_report(folded_spans)
 
-                self.tool_pattern_counts[successful][tool_name][pattern] = (
-                    self.tool_pattern_counts[successful][tool_name].get(pattern, 0) + 1
-                )
+        return folded_spans, report
 
-                # Store successful patterns
-                if successful:
-                    self.successful_patterns.setdefault(tool_name, set()).add(pattern)
-
-                # Store failure patterns
-                if not successful and call.get("error"):
-                    self.failure_patterns.setdefault(tool_name, set()).add(pattern)
-
-    def _extract_pattern_key(self, inputs: dict[str, Any]) -> str:
-        """Extract a simple key from inputs for pattern matching."""
-        # Take first few fields in a deterministic order
-        key_fields = list(inputs.items())[:3]
-        return ",".join(f"{k}:{v}" for k, v in key_fields)
-
-    def get_top_patterns(self, tool_name: str, successful: bool = True, top_n: int = 5) -> list[tuple[str, int]]:
-        """Get most frequent patterns for a tool.
+    def fold_spans_only(self, trace: list[dict[str, Any]]) -> list[SaliencyFoldedSpan]:
+        """
+        Fold an entire trace by folding each span only (no report).
 
         Args:
-            tool_name: Name of the tool
-            successful: True for successful, False for failure patterns
-            top_n: Number of top patterns to return
+            trace: List of TelemetrySpanV2-shaped span dicts
 
         Returns:
-            List of (pattern, count) tuples
+            List of folded spans
         """
-        patterns = self.tool_pattern_counts[successful].get(tool_name, {})
-        return sorted(patterns.items(), key=lambda x: -x[1])[:top_n]
+        folded_spans = []
+        for span in trace:
+            folded = self.fold_span(span)
+            folded_spans.append(folded)
 
-    def get_successful_patterns(self, tool_name: str) -> list[str]:
-        """Get list of successful patterns for a tool."""
-        return list(self.successful_patterns.get(tool_name, set()))
+        return folded_spans
 
-    def get_failure_patterns(self, tool_name: str) -> list[str]:
-        """Get list of failure patterns for a tool."""
-        return list(self.failure_patterns.get(tool_name, set()))
+    def _is_diagnostic_content(self, text: str) -> bool:
+        """
+        Determine if text contains diagnostic content.
 
-    def get_pattern_feedback(self, tool_name: str) -> dict[str, Any]:
-        """Get pattern feedback for a tool.
+        A text block is considered diagnostic if it contains:
+        - Code diff markers
+        - Failure-indicative keywords (with word boundaries to avoid false positives)
+
+        Args:
+            text: Text to check
 
         Returns:
-            Dictionary with success rates and pattern recommendations
+            True if text contains diagnostic content
         """
-        total = self.tool_pattern_counts[True].get(tool_name, {})
-        success_count = sum(total.values())
+        # Check for diff markers
+        if DIFF_PATTERN.search(text):
+            return True
 
-        failures = self.tool_pattern_counts[False].get(tool_name, {})
-        failure_count = sum(failures.values())
+        # Check for failure keywords (using regex with word boundaries)
+        # This prevents false positives like "error keywords" in documentation
+        for pattern in FAILURE_KEYWORD_PATTERNS:
+            if re.search(pattern, text, re.IGNORECASE):
+                return True
 
-        total_calls = success_count + failure_count
-        success_rate = (success_count / total_calls * 100) if total_calls > 0 else 0
+        return False
 
-        successful_patterns = self.get_successful_patterns(tool_name)
-        failure_patterns = self.get_failure_patterns(tool_name)
+    def _create_placeholder(self, original_text: str) -> str:
+        """
+        Create a lightweight JSON placeholder for compressed content.
 
-        return {
-            "tool_name": tool_name,
-            "success_rate": success_rate,
-            "successful_patterns": successful_patterns,
-            "failure_patterns": failure_patterns,
-            "recommendation": (
-                "Use patterns from successful_patterns list"
-                if failure_patterns
-                else "All patterns successful"
-            ),
+        Args:
+            original_text: Original text content
+
+        Returns:
+            JSON string placeholder
+        """
+        placeholder = {
+            "type": "compressed_trace",
+            "length": len(original_text),
+            "span_id": hash(original_text) % 1000000,  # Simple hash
+            "summary": original_text[:50] + "..." if len(original_text) > 50 else original_text,
         }
+        return json.dumps(placeholder)
+
+    def generate_report(self, folded_spans: list[SaliencyFoldedSpan]) -> dict[str, Any]:
+        """
+        Generate a compression report.
+
+        Args:
+            folded_spans: List of folded spans
+
+        Returns:
+            Dictionary with compression metrics
+        """
+        total_spans = len(folded_spans)
+        diagnostic_spans = sum(1 for s in folded_spans if s.content_type == 'diagnostic')
+        compressed_spans = total_spans - diagnostic_spans
+
+        total_original_bytes = sum(len(s.original_content) for s in folded_spans)
+        total_compressed_bytes = sum(len(s.compressed_content) for s in folded_spans)
+
+        # Compression ratio: original_bytes / compressed_bytes (e.g., 10× means original is 10x larger)
+        # This matches the intuitive interpretation of "10× compression" (file reduced to 1/10th size)
+        compression_ratio = (
+            total_original_bytes / total_compressed_bytes
+            if total_compressed_bytes > 0 and total_original_bytes > 0
+            else 1.0
+        )
+
+        size_reduction_percent = (
+            (total_original_bytes - total_compressed_bytes) / total_original_bytes * 100
+            if total_original_bytes > 0
+            else 0.0
+        )
+
+        met_target = compression_ratio >= self.min_compression_ratio
+
+        report = {
+            "total_spans": total_spans,
+            "diagnostic_spans": diagnostic_spans,
+            "compressed_spans": compressed_spans,
+            "total_original_bytes": total_original_bytes,
+            "total_compressed_bytes": total_compressed_bytes,
+            "compression_ratio": compression_ratio,
+            "size_reduction_percent": size_reduction_percent,
+            "min_compression_ratio_target": self.min_compression_ratio,
+            "met_target": met_target,
+        }
+
+        return report
+
+    def fold_and_report(self, trace: list[dict[str, Any]]) -> tuple[list[SaliencyFoldedSpan], dict[str, Any]]:
+        """
+        Fold a trace and generate a compression report.
+
+        Args:
+            trace: List of TelemetrySpanV2-shaped span dicts
+
+        Returns:
+            Tuple of (folded_spans, report)
+        """
+        folded_spans = self.fold_trace(trace)
+        report = self.generate_report(folded_spans)
+
+        return folded_spans, report
+
+
+# ============================================================================
+# Debug helper for troubleshooting compression
+# ============================================================================
+
+def debug_fold_spans(
+    trace: list[dict[str, Any]],
+    max_preview_length: int = 200,
+    verbose: bool = True,
+) -> None:
+    """
+    Debug helper to print what's being compressed and why.
+
+    Args:
+        trace: Trace to debug
+        max_preview_length: Maximum length of content preview to print
+        verbose: Whether to print detailed information
+    """
+    folder = SemanticSaliencyFolder()
+
+    print("\n🔍 SSF Compression Debug Report:")
+    print(f"{'='*60}")
+
+    for span in trace:
+        span_id = span.get("span_id", "unknown")
+        kind = span.get("kind", "unknown")
+
+        # Extract content
+        outputs = span.get("outputs", {})
+        content = outputs.get("content", span.get("content", ""))
+
+        # Convert to string
+        if isinstance(content, dict):
+            content_str = json.dumps(content, default=str)
+        else:
+            content_str = str(content)
+
+        # Check diagnostic
+        is_diagnostic = folder._is_diagnostic_content(content_str)
+
+        # Print info
+        content_preview = content_str[:max_preview_length] + "..." if len(content_str) > max_preview_length else content_str
+        compressed_preview = "..." if is_diagnostic else json.loads(folder._create_placeholder(content_str))["summary"]
+
+        print(f"\nSpan: {span_id} [{kind}]")
+        print(f"  Type: {'DIAGNOSTIC' if is_diagnostic else 'COMPRESSED'}")
+        print(f"  Original length: {len(content_str):,} bytes")
+        print(f"  Compressed length: {len(compressed_preview):,} bytes")
+        print(f"  Preview: {content_preview}")
+
+
+if __name__ == "__main__":
+    # Simple test
+    print("SEDS Phase D: SSF Demo")
+
+    # Create test span
+    test_span = {
+        "span_id": "test_001",
+        "kind": "call",
+        "outputs": {
+            "content": "--- a/file.py\n+++ b/file.py\n@@ -1,3 +1,4 @@\n print('hello')",
+        },
+    }
+
+    folder = SemanticSaliencyFolder()
+    folded = folder.fold_span(test_span)
+
+    print(f"\nFolded {folded.span_id}:")
+    print(f"  Type: {folded.content_type}")
+    print(f"  Original: {len(folded.original_content)} bytes")
+    print(f"  Compressed: {len(folded.compressed_content)} bytes")
+    print(f"  Ratio: {len(folded.compressed_content) / len(folded.original_content):.2f}×")

@@ -1,13 +1,19 @@
 """SEDS Phase D: Failure taxonomy and classification (§6.1).
 
-Provides a structured classification system for runtime failures:
-- Contract violations (input/output mismatch with ToolSpec)
-- Execution failures (runtime errors in tool implementations)
-- Safety violations (restricted operations, unauthorized access)
-- Data quality failures (invalid inputs, malformed data)
-- Timeout failures (resource exhaustion, long-running operations)
-- Semantic failures (incoherent behavior, hallucinations)
+Provides a structured classification system for runtime failures with
+exact enum labels as specified in syndicate_-1 correction:
+
+- tool_misuse: Incorrect tool usage or misuse
+- schema_violation: Contract/JSON schema violations
+- planning_loop: Recursive planning or infinite loops
+- context_overflow: Context window or memory overflow
+- hallucinated_fact: Invented facts not grounded in data
+- format_error: Data format mismatches or parsing errors
+- timeout: Operation exceeded time limit
+- crash: Unexpected process crashes
+- empty_output: No output generated
 """
+
 from __future__ import annotations
 
 import enum
@@ -21,15 +27,16 @@ logger = logging.getLogger(__name__)
 
 
 class FailureCategory(enum.Enum):
-    """Classifies failure types by root cause."""
-    CONTRACT_VIOLATION = auto()      # Input/output violates ToolSpec
-    EXECUTION_ERROR = auto()          # Tool impl raises exception
-    SAFETY_VIOLATION = auto()         # Restricted operation attempted
-    DATA_QUALITY = auto()             # Invalid input data
-    TIMEOUT = auto()                  # Operation exceeded time limit
-    SEMANTIC = auto()                 # Incoherent behavior, hallucination
-    RESOURCE_EXHAUSTION = auto()      # Memory/CPU limits exceeded
-    UNKNOWN = auto()                  # Unclassified failure
+    """Classifies failure types by root cause with exact spec labels."""
+    TOOL_MISUSE = auto()              # Incorrect tool usage
+    SCHEMA_VIOLATION = auto()          # Contract/JSON schema violations
+    PLANNING_LOOP = auto()             # Recursive planning or infinite loops
+    CONTEXT_OVERFLOW = auto()          # Context window or memory overflow
+    HALLUCINATED_FACT = auto()         # Invented facts not grounded in data
+    FORMAT_ERROR = auto()              # Data format mismatches
+    TIMEOUT = auto()                   # Operation exceeded time limit
+    CRASH = auto()                     # Unexpected process crashes
+    EMPTY_OUTPUT = auto()              # No output generated
 
 
 @dataclass
@@ -135,28 +142,40 @@ def categorize_error(error: Any) -> FailureCategory:
     """
     error_type = type(error).__name__
 
-    # Contract violations (type mismatch, missing required fields)
+    # Schema violations
     if "ValidationError" in error_type or "SchemaError" in error_type:
-        return FailureCategory.CONTRACT_VIOLATION
+        return FailureCategory.SCHEMA_VIOLATION
 
-    # Execution errors (tool implementation failure)
+    # Execution crashes
     if "RuntimeError" in error_type or "ToolExecutionError" in error_type:
-        return FailureCategory.EXECUTION_ERROR
+        return FailureCategory.CRASH
 
     # Timeout errors
     if "TimeoutError" in error_type or "Timeout" in error_type:
         return FailureCategory.TIMEOUT
 
-    # Safety violations (filesystem, network, etc.)
-    if "PermissionError" in error_type or "SecurityError" in error_type:
-        return FailureCategory.SAFETY_VIOLATION
+    # Format errors
+    if "FormatError" in error_type or "ParseError" in error_type:
+        return FailureCategory.FORMAT_ERROR
 
-    # Memory/CPU errors
-    if "MemoryError" in error_type or "ResourceExhaustedError" in error_type:
-        return FailureCategory.RESOURCE_EXHAUSTION
+    # Tool misuse
+    if "ToolUsageError" in error_type or "BadArgumentError" in error_type:
+        return FailureCategory.TOOL_MISUSE
+
+    # Context overflow
+    if "ContextOverflow" in error_type or "MemoryError" in error_type:
+        return FailureCategory.CONTEXT_OVERFLOW
+
+    # Hallucinated facts (semantic failures)
+    if "HallucinationError" in error_type or "FactError" in error_type:
+        return FailureCategory.HALLUCINATED_FACT
+
+    # Empty output
+    if "EmptyOutputError" in error_type:
+        return FailureCategory.EMPTY_OUTPUT
 
     # Default to unknown
-    return FailureCategory.UNKNOWN
+    return FailureCategory.TOOL_MISUSE
 
 
 def get_severity_from_category(category: FailureCategory) -> FailureSeverity:
@@ -169,21 +188,22 @@ def get_severity_from_category(category: FailureCategory) -> FailureSeverity:
         FailureSeverity
     """
     mapping = {
-        FailureCategory.CONTRACT_VIOLATION: FailureSeverity.ERROR,
-        FailureCategory.EXECUTION_ERROR: FailureSeverity.ERROR,
-        FailureCategory.SAFETY_VIOLATION: FailureSeverity.CRITICAL,
-        FailureCategory.DATA_QUALITY: FailureSeverity.WARNING,
+        FailureCategory.SCHEMA_VIOLATION: FailureSeverity.ERROR,
+        FailureCategory.TOOL_MISUSE: FailureSeverity.WARNING,
+        FailureCategory.PLANNING_LOOP: FailureSeverity.CRITICAL,
+        FailureCategory.CONTEXT_OVERFLOW: FailureSeverity.ERROR,
+        FailureCategory.HALLUCINATED_FACT: FailureSeverity.ERROR,
+        FailureCategory.FORMAT_ERROR: FailureSeverity.ERROR,
         FailureCategory.TIMEOUT: FailureSeverity.WARNING,
-        FailureCategory.SEMANTIC: FailureSeverity.INFO,
-        FailureCategory.RESOURCE_EXHAUSTION: FailureSeverity.ERROR,
-        FailureCategory.UNKNOWN: FailureSeverity.INFO,
+        FailureCategory.CRASH: FailureSeverity.CRITICAL,
+        FailureCategory.EMPTY_OUTPUT: FailureSeverity.WARNING,
     }
     return mapping.get(category, FailureSeverity.INFO)
 
 
 # Built-in failure detectors
-def contract_violation_detector(context: dict, span_data: dict) -> Optional[Failure]:
-    """Detect contract violations in tool calls (input/output schema mismatch)."""
+def schema_violation_detector(context: dict, span_data: dict) -> Optional[Failure]:
+    """Detect schema/contract violations in tool calls."""
     if span_data.get("kind") != "call" or span_data.get("error"):
         return None
 
@@ -194,7 +214,6 @@ def contract_violation_detector(context: dict, span_data: dict) -> Optional[Fail
     inputs = span_data.get("inputs", {})
     outputs = span_data.get("outputs", {})
 
-    # Check input schema compliance
     schema = tool_spec.get("json_schema")
     if not schema:
         return None
@@ -203,9 +222,9 @@ def contract_violation_detector(context: dict, span_data: dict) -> Optional[Fail
     for field in required:
         if field not in inputs:
             return Failure(
-                failure_id=f"cv_{context.get('span_id', 'unknown')[:8]}",
-                category=FailureCategory.CONTRACT_VIOLATION,
-                severity=get_severity_from_category(FailureCategory.CONTRACT_VIOLATION),
+                failure_id=f"sv_{context.get('span_id', 'unknown')[:8]}",
+                category=FailureCategory.SCHEMA_VIOLATION,
+                severity=get_severity_from_category(FailureCategory.SCHEMA_VIOLATION),
                 task_id=context.get("task_id", ""),
                 node_id=context.get("node_id", ""),
                 span_id=context.get("span_id"),
@@ -218,16 +237,15 @@ def contract_violation_detector(context: dict, span_data: dict) -> Optional[Fail
                 remediation="Ensure all required fields are provided in inputs"
             )
 
-    # Check output schema compliance
     if outputs:
         output_schema = schema.get("properties")
         if output_schema:
             for field, value in outputs.items():
                 if field not in output_schema:
                     return Failure(
-                        failure_id=f"cv_{context.get('span_id', 'unknown')[:8]}",
-                        category=FailureCategory.CONTRACT_VIOLATION,
-                        severity=get_severity_from_category(FailureCategory.CONTRACT_VIOLATION),
+                        failure_id=f"sv_{context.get('span_id', 'unknown')[:8]}",
+                        category=FailureCategory.SCHEMA_VIOLATION,
+                        severity=get_severity_from_category(FailureCategory.SCHEMA_VIOLATION),
                         task_id=context.get("task_id", ""),
                         node_id=context.get("node_id", ""),
                         span_id=context.get("span_id"),
@@ -244,7 +262,7 @@ def contract_violation_detector(context: dict, span_data: dict) -> Optional[Fail
 
 
 def execution_error_detector(context: dict, span_data: dict) -> Optional[Failure]:
-    """Detect execution errors in tool calls."""
+    """Detect execution errors/crashes in tool calls."""
     if span_data.get("kind") != "call":
         return None
 
@@ -253,13 +271,13 @@ def execution_error_detector(context: dict, span_data: dict) -> Optional[Failure
         return None
 
     return Failure(
-        failure_id=f"ex_{context.get('span_id', 'unknown')[:8]}",
+        failure_id=f"cr_{context.get('span_id', 'unknown')[:8]}",
         category=categorize_error(error),
         severity=get_severity_from_category(categorize_error(error)),
         task_id=context.get("task_id", ""),
         node_id=context.get("node_id", ""),
         span_id=context.get("span_id"),
-        message=f"Tool execution failed: {type(error).__name__}: {str(error)[:100]}",
+        message=f"Tool execution crashed: {type(error).__name__}: {str(error)[:100]}",
         details={
             "tool_name": span_data.get("tool_name"),
             "error_type": type(error).__name__,
@@ -297,10 +315,70 @@ def timeout_detector(context: dict, span_data: dict) -> Optional[Failure]:
     return None
 
 
+def format_error_detector(context: dict, span_data: dict) -> Optional[Failure]:
+    """Detect format errors in data."""
+    if span_data.get("kind") != "write":
+        return None
+
+    content = span_data.get("outputs", {}).get("content")
+    if not content:
+        return None
+
+    # Check for common format issues
+    if not content.strip():
+        return Failure(
+            failure_id=f"fe_{context.get('span_id', 'unknown')[:8]}",
+            category=FailureCategory.FORMAT_ERROR,
+            severity=FailureSeverity.WARNING,
+            task_id=context.get("task_id", ""),
+            node_id=context.get("node_id", ""),
+            span_id=context.get("span_id"),
+            message="Generated empty file content",
+            details={
+                "file": span_data.get("inputs", {}).get("file"),
+            },
+            remediation="Check output generation logic"
+        )
+
+    return None
+
+
+def planning_loop_detector(context: dict, span_data: dict) -> Optional[Failure]:
+    """Detect potential planning loops."""
+    if span_data.get("kind") != "call":
+        return None
+
+    # Check for repeated tool calls with same arguments
+    tool_name = span_data.get("tool_name")
+    inputs = span_data.get("inputs", {})
+
+    # In a real implementation, this would check against historical calls
+    # For now, we just detect repeated planning-related tool calls
+    if tool_name in ["plan", "plan_complex", "generate_plan"]:
+        return Failure(
+            failure_id=f"pl_{context.get('span_id', 'unknown')[:8]}",
+            category=FailureCategory.PLANNING_LOOP,
+            severity=FailureSeverity.WARNING,
+            task_id=context.get("task_id", ""),
+            node_id=context.get("node_id", ""),
+            span_id=context.get("span_id"),
+            message=f"Possible planning loop detected: {tool_name}",
+            details={
+                "tool_name": tool_name,
+                "inputs": inputs,
+            },
+            remediation="Review planning strategy to avoid infinite recursion"
+        )
+
+    return None
+
+
 def initialize_failure_taxonomy():
     """Initialize default failure detectors."""
-    register_failure_detector(contract_violation_detector)
+    register_failure_detector(schema_violation_detector)
     register_failure_detector(execution_error_detector)
     register_failure_detector(timeout_detector)
+    register_failure_detector(format_error_detector)
+    register_failure_detector(planning_loop_detector)
 
-    logger.info("Failure taxonomy initialized with 3 built-in detectors")
+    logger.info("Failure taxonomy initialized with 5 built-in detectors (exact labels: tool_misuse, schema_violation, planning_loop, context_overflow, hallucinated_fact, format_error, timeout, crash, empty_output)")
