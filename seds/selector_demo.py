@@ -153,10 +153,12 @@ def main():
     print("-" * 70)
     print(f"   Lineage nodes: {selector.lineage.size()}")
     print(f"   Archive items: {selector.archive.size()}")
-    
-    if best:
+
+    if best and best in selector.lineage._lineage:
         parents = selector.lineage.get_parents(best)
         print(f"   Best candidate ({best}) parents: {[p.node_id for p in parents]}")
+    elif best:
+        print(f"   Best candidate ({best}) not in lineage (not tracked as parent)")
     print()
     
     # Show final statistics
