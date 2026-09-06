@@ -124,7 +124,8 @@ def safe_eval_arithmetic(expr: str) -> float | None:
 
 @neatlogs_span(kind="AGENT")
 def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[str, Any],
-             seed: int = 42, rollout_id: str = None, node_id: str = None, task_id: str = None) -> tuple[str, list[dict]]:
+             seed: int = 42, rollout_id: str = None, node_id: str = None, task_id: str = None,
+             broker: object = None) -> tuple[str, list[dict]]:
     """Run the domain-parametric ReAct/CoT agent.
 
     Args:
@@ -135,6 +136,7 @@ def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[st
         rollout_id: Optional rollout ID for trace recording
         node_id: Optional node ID for trace recording
         task_id: Optional task ID for trace recording
+        broker: Optional Broker instance for tool-call recording
 
     Returns:
         (answer, traces, spans) — the final answer string, trace list, and neatlogs span list
@@ -316,20 +318,17 @@ def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[st
 
             result = execute_tool(tool_spec, args)
 
-            # Record tool call to broker if rollout_id is provided
-            if rollout_id and node_id and task_id:
+            # Record tool call to broker if rollout_id and broker are provided
+            if rollout_id and node_id and task_id and broker:
                 try:
-                    from seds.broker import Broker
-                    broker = Broker.get_instance()
-                    if broker:
-                        broker.record_tool_call(
-                            rollout_id=rollout_id,
-                            node_id=node_id,
-                            task_id=task_id,
-                            tool_name=tool_name,
-                            arguments=args,
-                            result=result,
-                        )
+                    broker.record_tool_call(
+                        rollout_id=rollout_id,
+                        node_id=node_id,
+                        task_id=task_id,
+                        tool_name=tool_name,
+                        arguments=args,
+                        result=result,
+                    )
                 except Exception:
                     # Fail silently - trace recording is optional
                     pass
@@ -456,6 +455,7 @@ if __name__ == "__main__":
         rollout_id="smoke-test-rollout",
         node_id="smoke-test-node",
         task_id="smoke-test-task",
+        broker=broker,
     )
     print(f"Agent answer: {answer}")
     print(f"Traces: {len(traces)} steps")
