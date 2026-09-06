@@ -50,12 +50,9 @@ FAILURE_KEYWORD_PATTERNS = [
     r'\bNameError\b',         # Name error
     r'\bZeroDivisionError\b', # Division by zero
     r'\bStopIteration\b',     # Stop iteration
-    r'\bException\b',         # Generic exception
+    # Traceback markers (specific, not generic)
     r'\bTraceback',           # Traceback marker (line starts with)
-    r'\bError\b',             # Generic error (when in error context)
-    r'\bWarning\b',           # Warning
-    r'\bFailed\b',            # Failed
-    r'\bException\s+raised\b', # Exception raised
+    r'\bException\s+raised\b', # Exception raised (specific phrase)
     r'\bTraceback\s+\(most\s+recent\s+call\s+last\)', # Full traceback header
 ]
 

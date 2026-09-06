@@ -52,7 +52,7 @@ def create_synthetic_noisy_trace() -> list[dict[str, any]]:
     base_text = """
     The Syndicate framework is designed to be highly extensible and modular.
     This is a very large block of text that doesn't contain diff markers or
-    error keywords, and should be compressed by SSF. The framework provides
+    failure indicators, and should be compressed by SSF. The framework provides
     comprehensive tool integration capabilities, allowing developers to build
     complex workflows with minimal boilerplate. The architecture follows
     clean separation of concerns, with distinct modules for planning, execution,
