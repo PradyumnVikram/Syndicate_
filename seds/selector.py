@@ -1202,10 +1202,15 @@ class SEDSSelector:
         Args:
             node: The synthetic node
             snapshot: The metrics snapshot
-            parent_id: Optional parent node ID
+            parent_id: Optional parent node ID. If not provided, the first parent
+                      from node.parents will be used.
         """
         # Increment total nodes created
         self._total_nodes_created += 1
+
+        # Extract parent_id from node.parents if not provided
+        if parent_id is None and node.parents and len(node.parents) > 0:
+            parent_id = node.parents[0]
 
         # Add to lineage (required for all evaluation outcomes)
         self.lineage.add(node, parent_id=parent_id)
