@@ -7,6 +7,13 @@ from collections import defaultdict, deque
 import math
 import random
 import copy
+import bisect
+from scipy import stats
+
+# ==================== Constants ====================
+
+# HGM Decoupling Rule: N_t^α >= |T_t|
+DECOUPLING_ALPHA = 0.6
 
 # ==================== Enums ====================
 
@@ -760,6 +767,195 @@ class RollbackLedger:
         """Return the number of failed transactions."""
         return len(self._failed)
 
+# ==================== HGM - Clade Backpropagator ====================
+
+class CladeBackpropagator:
+    """
+    Tracks clade success/failure counts with backpropagation up the ancestor chain.
+    
+    Each clade has:
+    - n^C_success(a): number of successful evaluations in the clade
+    - n^C_failure(a): number of failed evaluations in the clade
+    - CMP = n^C_success(a) / (n^C_success(a) + n^C_failure(a))
+    
+    Backpropagation propagates evaluation results up to all ancestors.
+    """
+
+    def __init__(self):
+        """Initialize the clade backpropagator."""
+        # Maps clade_id -> (success_count, failure_count)
+        self._clade_stats: Dict[str, Tuple[int, int]] = defaultdict(lambda: (0, 0))
+
+    def _get_ancestors(self, node_id: str, archive: ArchiveTree) -> List[str]:
+        """
+        Get all ancestor clade IDs from a node (including the node itself).
+        
+        Args:
+            node_id: The node ID to get ancestors for
+            archive: The archive tree for node lookups
+            
+        Returns:
+            List of ancestor clade IDs (node itself first, then ancestors)
+        """
+        ancestors = []
+        current_id = node_id
+
+        # Get ancestors through the ancestor chain
+        while True:
+            item = archive._items.get(current_id)
+            if item is None:
+                break
+
+            ancestors.append(current_id)
+
+            # Move to parent
+            parent_ids = []
+            for pid, children in archive._children.items():
+                if current_id in children:
+                    parent_ids.append(pid)
+                    break
+
+            if not parent_ids:
+                break
+
+            current_id = parent_ids[0]
+
+        ancestors.reverse()
+        return ancestors
+
+    def backpropagate(self, node_id: str, is_success: bool, archive: ArchiveTree):
+        """
+        Propagate evaluation success/failure up the ancestor chain.
+        
+        Updates success/failure counts for all nodes in the lineage.
+        
+        Args:
+            node_id: The node that was evaluated
+            is_success: Whether the evaluation was successful (True) or failed (False)
+            archive: The archive tree for ancestor lookups
+        """
+        # Get all ancestor clades (including the node itself)
+        clades = self._get_ancestors(node_id, archive)
+
+        # Update counts for each clade
+        for clade_id in clades:
+            if clade_id not in self._clade_stats:
+                self._clade_stats[clade_id] = (0, 0)
+
+            success_count, failure_count = self._clade_stats[clade_id]
+            if is_success:
+                success_count += 1
+            else:
+                failure_count += 1
+
+            self._clade_stats[clade_id] = (success_count, failure_count)
+
+    def get_clade_stats(self, node_id: str) -> Tuple[int, int]:
+        """
+        Get success/failure counts for a clade.
+        
+        Args:
+            node_id: The node ID to get stats for
+            
+        Returns:
+            Tuple of (success_count, failure_count)
+        """
+        if node_id not in self._clade_stats:
+            return (0, 0)
+        return self._clade_stats[node_id]
+
+    def get_cmp(self, node_id: str) -> float:
+        """
+        Calculate Clade-Metaproductivity (CMP) for a clade.
+        
+        CMP = n^C_success(a) / (n^C_success(a) + n^C_failure(a))
+        If both counts are zero, returns 0.0
+        
+        Args:
+            node_id: The node ID to calculate CMP for
+            
+        Returns:
+            CMP value between 0.0 and 1.0
+        """
+        success, failure = self.get_clade_stats(node_id)
+        total = success + failure
+        if total == 0:
+            return 0.0
+        return success / total
+
+    def get_beta_params(self, node_id: str, tau: float) -> Tuple[float, float]:
+        """
+        Get Beta distribution parameters for Thompson sampling.
+        
+        Parameters:
+        - tau(t) * (1 + n^C_success(a))
+        - tau(t) * (1 + n^C_failure(a))
+        
+        Args:
+            node_id: The node ID
+            tau: The tau scheduler value
+            
+        Returns:
+            Tuple of (alpha, beta) parameters for Beta distribution
+        """
+        success, failure = self.get_clade_stats(node_id)
+        alpha = tau * (1 + success)
+        beta = tau * (1 + failure)
+        return (alpha, beta)
+
+# ==================== HGM - Tau Scheduler ====================
+
+class TauScheduler:
+    """
+    Schedules the exploration-exploitation warmup parameter τ(t).
+    
+    Behavior:
+    - Flat early: τ(t) stays low during early exploration
+    - Sharpens near deadline: τ(t) increases as deadline approaches
+    """
+
+    def __init__(self, min_tau: float = 0.1, max_tau: float = 10.0):
+        """
+        Initialize the tau scheduler.
+        
+        Args:
+            min_tau: Minimum tau value
+            max_tau: Maximum tau value
+        """
+        self.min_tau = min_tau
+        self.max_tau = max_tau
+        self.current_step = 0
+
+    def schedule(self, total_steps: int) -> float:
+        """
+        Calculate τ(t) for the current step.
+        
+        Uses a linear interpolation: τ(t) = min_tau + (max_tau - min_tau) * (t / T)
+        where t is the current step and T is the total steps.
+        
+        Args:
+            total_steps: Total number of steps in the schedule
+            
+        Returns:
+            The tau value for the current step
+        """
+        self.current_step += 1
+
+        if total_steps == 0:
+            return self.min_tau
+
+        # Linear interpolation from min to max
+        tau = self.min_tau + (self.max_tau - self.min_tau) * (self.current_step / total_steps)
+
+        # Clamp to valid range
+        tau = max(self.min_tau, min(self.max_tau, tau))
+
+        return tau
+
+    def reset(self):
+        """Reset the scheduler state."""
+        self.current_step = 0
+
 # ==================== Selector Checkpoint ====================
 
 class SelectorCheckpoint:
@@ -881,7 +1077,9 @@ class SEDSSelector:
         c: float = 2.0,
         epsilon: float = 0.1,
         max_archive_size: int = 1000,
-        allow_rollbacks: bool = True
+        allow_rollbacks: bool = True,
+        max_tau: float = 10.0,
+        total_steps: int = 1000
     ):
         """
         Initialize the SEDS selector.
@@ -893,24 +1091,31 @@ class SEDSSelector:
             epsilon: Exploration probability for epsilon-greedy
             max_archive_size: Maximum number of nodes to keep in archive
             allow_rollbacks: Enable rollback functionality
+            max_tau: Maximum value for tau scheduler
+            total_steps: Total number of steps for tau scheduler
         """
         # Create policy based on type
         self.policy_type = policy_type
-        
+
         if policy_type == PolicyType.UCB:
             self.policy = ColdStartUCBSelector(alpha=alpha, c=c)
         else:
             self.policy = EpsilonDefaultPolicy(epsilon=epsilon)
-        
+
         self.max_archive_size = max_archive_size
         self.allow_rollbacks = allow_rollbacks
-        
+
         # Initialize components
         self.lineage = NodeLineage()
         self.archive = ArchiveTree()
         self.pareto_frontier = ParetoFrontier()
         self.rollback_ledger = RollbackLedger() if allow_rollbacks else None
-        
+
+        # HGM components
+        self.clade_backpropagator = CladeBackpropagator()
+        self.tau_scheduler = TauScheduler(min_tau=0.1, max_tau=max_tau)
+        self.tau_scheduler_schedule = total_steps
+
         # Tracking state
         self._total_nodes_created: int = 0
         self._total_evaluations: int = 0
@@ -948,7 +1153,7 @@ class SEDSSelector:
     
     def select_node(self, candidates: List[str]) -> Optional[str]:
         """
-        Select a node from candidates.
+        Select a node from candidates using the configured policy.
         
         Args:
             candidates: List of candidate node IDs
@@ -958,8 +1163,11 @@ class SEDSSelector:
         """
         if not candidates:
             return None
-        
-        if self.policy_type == PolicyType.UCB:
+
+        if self.policy_type == PolicyType.THOMPSON:
+            # Use Thompson sampling with HGM clade statistics
+            return self.select_node_thompson(candidates)
+        elif self.policy_type == PolicyType.UCB:
             return self.policy.select()
         else:
             return self.policy.select(candidates)
@@ -975,8 +1183,12 @@ class SEDSSelector:
         # Update policy
         if isinstance(self.policy, ColdStartUCBSelector):
             self.policy.update(node_id, reward)
-        
+
         self._total_evaluations += 1
+
+        # HGM: Backpropagate evaluation result
+        is_success = reward >= 0.5  # Threshold for success/failure
+        self.clade_backpropagator.backpropagate(node_id, is_success, self.archive)
     
     def add_to_archive(
         self,
@@ -1030,7 +1242,98 @@ class SEDSSelector:
             The node ID of the best candidate, or None
         """
         return self.pareto_frontier.get_dominant_node()
-    
+
+    # ==================== HGM Methods ====================
+
+    def check_decoupling_rule(self) -> Tuple[bool, float, float]:
+        """
+        Check the decoupling rule: N_t^α >= |T_t|
+        
+        If true: Expansion (Phase 3), Else: Evaluation (Phase 5)
+        
+        Returns:
+            Tuple of (should_expand, N_t, |T_t|)
+        """
+        N_t = self._total_evaluations  # Total individual task evaluations
+        T_t = self.archive.size()      # Count of unique agent codebases
+
+        # Decoupling rule check
+        N_t_alpha = N_t ** DECOUPLING_ALPHA
+        should_expand = N_t_alpha >= T_t
+
+        return (should_expand, N_t_alpha, T_t)
+
+    def select_node_thompson(self, candidates: List[str]) -> Optional[str]:
+        """
+        Select a node using Thompson sampling over Beta distributions.
+        
+        Samples from Beta(τ(t)*(1+n_success), τ(t)*(1+n_failure)) for each candidate.
+        
+        Args:
+            candidates: List of candidate node IDs
+            
+        Returns:
+            The selected node ID, or None if no candidates
+        """
+        if not candidates:
+            return None
+
+        # Get current tau value
+        tau = self.tau_scheduler.schedule(self.tau_scheduler_schedule)
+
+        # Sample from Beta distributions for each candidate
+        beta_samples = {}
+        for node_id in candidates:
+            alpha, beta = self.clade_backpropagator.get_beta_params(node_id, tau)
+            sample = stats.beta.rvs(alpha, beta)
+            beta_samples[node_id] = sample
+
+        # Select node with highest sample
+        selected_node_id = max(beta_samples, key=beta_samples.get)
+        return selected_node_id
+
+    def get_hgm_statistics(self) -> Dict[str, Any]:
+        """
+        Get HGM-specific statistics.
+        
+        Returns:
+            Dictionary with HGM metrics including CMP values, tau scheduler state,
+            and decoupling rule status
+        """
+        N_t = self._total_evaluations
+        T_t = self.archive.size()
+        tau = self.tau_scheduler.schedule(self.tau_scheduler_schedule)
+        should_expand, N_t_alpha, _ = self.check_decoupling_rule()
+
+        # Calculate CMP for the best candidate
+        best_candidate = self.get_best_candidate()
+        best_cmp = 0.0
+        if best_candidate:
+            best_cmp = self.clade_backpropagator.get_cmp(best_candidate)
+
+        # Calculate CMP for each clade in archive
+        cmp_values = {}
+        for node_id in list(self.archive._items.keys())[:10]:  # Top 10 for display
+            cmp_values[node_id] = self.clade_backpropagator.get_cmp(node_id)
+
+        return {
+            'decoupling_rule': {
+                'should_expand': should_expand,
+                'N_t_alpha': N_t_alpha,
+                'T_t': T_t,
+                'rule': f"N_t^{{0.6}} >= |T_t|"
+            },
+            'tau_scheduler': {
+                'current_tau': tau,
+                'current_step': self.tau_scheduler.current_step,
+                'total_steps': self.tau_scheduler_schedule,
+                'phase': 'expansion' if should_expand else 'evaluation'
+            },
+            'best_candidate_cmp': best_candidate,
+            'best_candidate_cmp_value': best_cmp,
+            'clade_compmetrics': cmp_values
+        }
+
     def checkpoint(self, filepath: str):
         """
         Save the selector state to a checkpoint file.
@@ -1059,8 +1362,8 @@ class SEDSSelector:
             Dictionary with statistics
         """
         best_candidate = self.get_best_candidate()
-        
-        return {
+
+        stats = {
             'total_nodes_created': self._total_nodes_created,
             'total_evaluations': self._total_evaluations,
             'archive_size': self.archive.size(),
@@ -1071,3 +1374,8 @@ class SEDSSelector:
             'successful_transactions': self.rollback_ledger.get_successful_count() if self.rollback_ledger else 0,
             'failed_transactions': self.rollback_ledger.get_failed_count() if self.rollback_ledger else 0
         }
+
+        # Add HGM statistics
+        stats['hgm'] = self.get_hgm_statistics()
+
+        return stats
