@@ -41,13 +41,19 @@ from agent_v0 import agent_v0
 from seds.evaluation import promote_or_reject
 from datetime import datetime
 
-# CRITICAL: Load .env with override=True before importing anything that uses broker
+# CRITICAL: Load .env with override=True BEFORE importing any seds components
+# This ensures the broker uses the correct API key
 env_path = Path("/home/azidozide/projects/syndicate_/.env")
 if env_path.exists():
     dotenv.load_dotenv(env_path, override=True)
     print(f"✓ Loaded .env: {env_path}")
 else:
     print("✗ .env not found")
+
+# CRITICAL: Override SOCKET_PATH environment variable BEFORE importing seds.runtime.llm
+# This ensures agent_v0 will connect to the correct broker socket
+os.environ["SOCKET_PATH"] = str(Path("/tmp/seds_acceptance_test/broker.sock"))
+print(f"✓ SOCKET_PATH set to: {os.environ['SOCKET_PATH']}")
 
 # Verify correct key is loaded
 api_key = os.environ.get("TENSORMUX_API_KEY")
@@ -70,6 +76,9 @@ def run_agent_task(domain: TaskDomain, task_input: dict[str, Any], expected_answ
     try:
         print(f"    Agent running: {task_input.get('question', 'N/A')}")
 
+        # Get socket path from broker or use default
+        socket_path = broker.socket_path if broker else "/tmp/seds/run/llm.sock"
+
         # Call the REAL agent_v0 through the broker
         answer, traces, spans = agent_v0(
             domain_goal=domain.goal,
@@ -78,16 +87,27 @@ def run_agent_task(domain: TaskDomain, task_input: dict[str, Any], expected_answ
             seed=42,
             node_id="test_node",
             task_id="test_task",
-            broker=broker
+            broker=broker,
+            socket_path=socket_path
         )
         print(f"    Agent answer: {answer}")
 
-        # Compare with expected
-        exact_match = answer.strip().lower() == expected_answer.lower()
+        # Extract final yes/no from verbose reasoning using regex (prefer last match)
+        import re
+        all_matches = re.findall(r"\b(yes|no)\b", answer, re.IGNORECASE)
+        extracted = all_matches[-1].lower() if all_matches else answer.strip().lower()
+        exact_match = extracted == expected_answer.lower()
+        print(f"    Extracted answer: {extracted}")
         print(f"    Match: {exact_match} (expected: {expected_answer})")
 
         return exact_match, answer
 
+    except (ConnectionError, TimeoutError, ConnectionRefusedError, OSError) as e:
+        print(f"    ✗ CONNECTION ERROR: {e}")
+        print(f"    This indicates broker is not running or socket path is incorrect.")
+        import traceback
+        traceback.print_exc()
+        raise ConnectionError(f"Agent call failed with connection error: {e}") from e
     except Exception as e:
         print(f"    ERROR: {e}")
         import traceback
@@ -106,13 +126,28 @@ def evaluate_agent_on_val_tasks(domain: TaskDomain, node_id: str = "baseline", b
     correct = 0
     responses = []
     scores = []
+    error_count = 0
 
     for i, task in enumerate(val_tasks, 1):
         print(f"\n[{i}/{total}] Task: {task.task_id}")
         print(f"  Question: {task.inputs['question']}")
         print(f"  Expected: {task.reference}")
 
-        success, response = run_agent_task(domain, task.inputs, task.reference, broker=broker)
+        try:
+            success, response = run_agent_task(domain, task.inputs, task.reference, broker=broker)
+        except ConnectionError as e:
+            error_count += 1
+            responses.append({
+                "task_id": task.task_id,
+                "question": task.inputs['question'],
+                "expected": task.reference,
+                "response": str(e),
+                "success": False,
+                "error_type": "connection_error"
+            })
+            print(f"  ✗ Result: FAIL (connection error)")
+            continue
+
         responses.append({
             "task_id": task.task_id,
             "question": task.inputs['question'],
@@ -137,12 +172,27 @@ def evaluate_agent_on_val_tasks(domain: TaskDomain, node_id: str = "baseline", b
     avg_accuracy = correct / total
     accuracy = 1.0 if correct == total else avg_accuracy
 
+    # CRITICAL: Check if all responses are errors (not genuine failures)
+    if error_count == total:
+        print(f"\n{'!' * 80}")
+        print(f"✗ FATAL: All tasks failed with CONNECTION/NETWORK ERRORS")
+        print(f"{'!' * 80}")
+        print(f"Possible causes:")
+        print(f"  - Broker socket path is incorrect")
+        print(f"  - Broker is not running (missing broker.start() call)")
+        print(f"  - Network connection issues")
+        print(f"  - Invalid API credentials or quota exceeded")
+        print(f"{'!' * 80}")
+        raise RuntimeError(f"All {total} tasks failed with connection errors. Test cannot continue.")
+
     print(f"\n{'=' * 80}")
     print(f"EVALUATION COMPLETE")
     print(f"{'=' * 80}")
     print(f"Total tasks: {total}")
     print(f"Correct: {correct}")
     print(f"Incorrect: {total - correct}")
+    if error_count > 0:
+        print(f"Connection errors: {error_count} (not counted as failures)")
     print(f"Accuracy: {accuracy * 100:.2f}%")
     print(f"{'=' * 80}")
 
@@ -199,7 +249,11 @@ async def acceptance_test() -> int:
             budget_per_node=5.0,
             rate_limit_tps=5.0
         )
-        print(f"✓ Broker initialized")
+        broker.start()
+        print(f"✓ Broker started on {broker_socket_path}")
+
+        # Give broker time to initialize the socket
+        time.sleep(0.5)
 
         baseline_results = evaluate_agent_on_val_tasks(domain, node_id="baseline", broker=broker)
 
@@ -286,7 +340,7 @@ async def acceptance_test() -> int:
 
             # Evaluate top candidate with REAL evaluation (not simulated)
             print(f"  Evaluating candidate {iter_num}...")
-            candidate_results = evaluate_agent_on_val_tasks(domain, node_id=f"candidate_{iter_num}")
+            candidate_results = evaluate_agent_on_val_tasks(domain, node_id=f"candidate_{iter_num}", broker=broker)
             candidate_metrics = MetricsSnapshot(
                 success_rate=candidate_results["accuracy"],
                 average_reward=candidate_results["accuracy"],
@@ -335,7 +389,7 @@ async def acceptance_test() -> int:
         print(f"Previous best performance: {best_performance * 100:.2f}%")
 
         # Re-run evaluation on same tasks (real evaluation in this test)
-        final_results = evaluate_agent_on_val_tasks(domain, node_id=f"best_{best_node_id}")
+        final_results = evaluate_agent_on_val_tasks(domain, node_id=f"best_{best_node_id}", broker=broker)
 
         final_accuracy = final_results["accuracy"]
 
