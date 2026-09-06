@@ -46,6 +46,26 @@ def create_mock_broker():
             dummy_code = f"# Generated mutation {prompt_hash}\n# Based on: {prompt[:30]}...\n"
             return dummy_code
 
+        def handle_call(self, msg):
+            """Mock broker call returning canned structured JSON response."""
+            self.call_count += 1
+
+            # Return a canned structured mutation response
+            response_content = '''{
+                "operator": "prompt_edit",
+                "target_file": "agent.py",
+                "old_str": "def agent():",
+                "new_str": "def agent():\\n    improved_agent()",
+                "rationale": "Fixed bug in agent logic"
+            }'''
+
+            return {
+                "ok": True,
+                "response": {
+                    "content": response_content
+                }
+            }
+
     return MockBroker()
 
 
@@ -215,6 +235,68 @@ def test_ast_hash_function():
     print()
 
 
+def test_sample_mutations():
+    """Test the core sample_mutations() method with mock broker."""
+    print("6. Testing sample_mutations() with Mock Broker")
+    print("-" * 70)
+
+    # Create mock broker
+    broker = create_mock_broker()
+    assert broker is not None
+    print("   ✓ Mock broker created")
+
+    # Create synthesizer with small best_of_n for quick testing
+    synthesizer = SEDSSynthesizer(
+        broker=broker,
+        best_of_n=2,  # Small number for quick demo
+        deterministic_tier="deterministic",
+        max_file_size=50000,
+        max_similar_mutations=5,
+    )
+    assert synthesizer is not None
+    print(f"   ✓ SEDSSynthesizer created (best_of_n=2)")
+
+    # Create a test context
+    context = create_test_context("node_test")
+    assert context is not None
+    print(f"   ✓ MutationContext created for node {context.current_node_id}")
+
+    # Call sample_mutations() - this is the core entry point
+    print("   → Calling sample_mutations() (may take a moment)...")
+    try:
+        results = synthesizer.sample_mutations(context)
+        print(f"   ✓ sample_mutations() completed successfully")
+
+        # Verify results
+        assert results is not None
+        assert isinstance(results, list)
+        print(f"   ✓ Returned {len(results)} mutation result(s)")
+
+        # Check each result
+        for i, result in enumerate(results):
+            print(f"\n   Result {i+1}:")
+            print(f"      - request: {result.request}")
+            print(f"      - success: {result.success}")
+            print(f"      - duplicate: {result.duplicate}")
+            print(f"      - preflight_checked: {result.preflight_checked}")
+            print(f"      - diff_hash: {result.diff_hash[:12] if result.diff_hash else 'N/A'}...")
+            print(f"      - ast_matches_parent: {result.ast_matches_parent}")
+
+            # Verify request is a MutationRequest
+            assert result.request is not None
+            assert hasattr(result.request, 'operator')
+            assert hasattr(result.request, 'target_file')
+            print(f"      ✓ Valid MutationRequest created")
+
+        print("\n   ✓ All MutationRequests are valid objects")
+        print(f"   ✓ sample_mutations() exercised end-to-end with mock broker")
+        print()
+
+    except Exception as e:
+        print(f"   ✗ sample_mutations() failed: {e}")
+        raise
+
+
 def main():
     """Run all tests."""
     print("=" * 70)
@@ -228,6 +310,7 @@ def main():
         test_mutation_context()
         test_mutation_request()
         test_ast_hash_function()
+        test_sample_mutations()
 
         print("=" * 70)
         print("All Tests Passed Successfully!")
@@ -238,6 +321,8 @@ def main():
         print("  - All classes instantiate properly")
         print("  - MutationContext and MutationRequest work")
         print("  - Internal helper functions (_ast_hash, _prompt_hash) work")
+        print("  - sample_mutations() exercised end-to-end with mock broker")
+        print("  - Core value of synthesizer module: mutation proposal generation")
         print("  - No crashes or errors in basic usage")
         return 0
 

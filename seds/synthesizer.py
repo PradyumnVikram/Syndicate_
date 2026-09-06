@@ -229,7 +229,7 @@ class SEDSSynthesizer:
                 break
 
             # Request mutation from LLM
-            req = self._request_mutation(prompt, i + 1, len(self.best_of_n))
+            req = self._request_mutation(prompt, i + 1, self.best_of_n)
 
             # Preflight check
             preflight_ok = _preflight_mutation(req, self.max_file_size)
