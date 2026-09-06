@@ -309,7 +309,7 @@ class Broker:
             kwargs["max_completion_tokens"] = params.get("max_tokens", 2000)
 
         if tools:
-            kwargs["tools"] = [{"type": "function", "function": t} for t in tools]
+            kwargs["tools"] = tools  # tools are already in OpenAI format from the client
 
         response = client.chat.completions.create(**kwargs)
         usage = response.usage
@@ -394,6 +394,9 @@ class Broker:
         try:
             result = self._call_upstream(resolved_model, params, messages, tools)
         except Exception as e:
+            logger.error(f"Upstream call failed: {e}")
+            import traceback
+            traceback.print_exc()
             return {"ok": False, "error": "UPSTREAM_ERROR", "detail": str(e)}
 
         # Compute cost
