@@ -48,10 +48,10 @@ def test_live_environment():
     print("Test 1: Live Environment Verification")
     print("=" * 80)
 
-    # Load .env if exists
+    # Load .env if exists (CRITICAL: use override=True)
     env_path = Path("/home/azidozide/projects/syndicate_/.env")
     if env_path.exists():
-        dotenv.load_dotenv(env_path)
+        dotenv.load_dotenv(env_path, override=True)
         print(f"✓ Loaded .env from: {env_path}")
 
     # Check API key
