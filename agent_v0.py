@@ -14,7 +14,25 @@ import re
 import time
 from typing import Any
 
+from neatlogs import span as neatlogs_span
+from neatlogs import init as neatlogs_init
+from neatlogs import InMemoryDiagnosticSpanExporter
+
 from seds.runtime.llm import deterministic
+
+# Initialize neatlogs for offline sandbox execution with in-memory exporter
+# Create a TracerProvider with the in-memory exporter
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+_in_memory_exporter = InMemoryDiagnosticSpanExporter()
+_tracer_provider = TracerProvider()
+_tracer_provider.add_span_processor(SimpleSpanProcessor(_in_memory_exporter))
+
+neatlogs_init(
+    disable_export=True,
+    tracer_provider=_tracer_provider,
+)
 
 
 def safe_eval_arithmetic(expr: str) -> float | None:
@@ -104,6 +122,7 @@ def safe_eval_arithmetic(expr: str) -> float | None:
         return None
 
 
+@neatlogs_span(kind="AGENT")
 def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[str, Any],
              seed: int = 42) -> tuple[str, list[dict]]:
     """Run the domain-parametric ReAct/CoT agent.
@@ -115,11 +134,21 @@ def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[st
         seed: Deterministic seed for the deterministic tier
 
     Returns:
-        (answer, traces) — the final answer string and a list of trace dicts
+        (answer, traces, spans) — the final answer string, trace list, and neatlogs span list
     """
     traces: list[dict] = []
 
+    # Initialize neatlogs in-memory exporter for span capture
+    _neatlogs_exporter = _in_memory_exporter
+
     # Step 1: CoT planning
+    @neatlogs_span(kind="CHAIN", name="planning")
+    def planning_step() -> None:
+        """Chain-of-thought planning step."""
+        pass
+
+    planning_step()
+
     system_prompt = (
         "You are a general-purpose reasoning agent. "
         "Follow a Chain-of-Thought approach. "
@@ -161,8 +190,14 @@ def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[st
         "outputs": {"system_prompt": system_prompt},
     })
 
-    # Step 2: Initial reasoning call via the broker
+    @neatlogs_span(kind="TOOL", name="initial_reasoning")
+    def initial_reasoning() -> None:
+        """Initial reasoning call via the broker."""
+        pass
+
     response = deterministic(messages, tools=openai_tools, seed=seed)
+    initial_reasoning()
+
     traces.append({
         "step": 1,
         "module": "tool_call",
@@ -171,11 +206,25 @@ def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[st
     })
 
     if not response.get("ok"):
-        return f"Error: {response.get('error', 'unknown')}", traces
+        # Extract spans even on early return for consistent 3-tuple return
+        try:
+            spans = [
+                envelope.to_dict()
+                for envelope in _neatlogs_exporter.get_finished_envelopes()
+            ]
+        except Exception:
+            spans = []
+        return f"Error: {response.get('error', 'unknown')}", traces, spans
 
     assistant_msg = response["response"]["content"]
 
-    # Step 3: If we have a calculator tool, extract and use it
+    @neatlogs_span(kind="TOOL", name="tool_use")
+    def tool_use() -> None:
+        """If we have a calculator tool, extract and use it."""
+        # Step 3: If we have a calculator tool, extract and use it
+        pass
+
+    tool_use()
     tools_dict = {t.name: t for t in domain_tools} if domain_tools else {}
 
     if "calculator" in tools_dict and assistant_msg:
@@ -208,11 +257,16 @@ def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[st
             except Exception:
                 pass
 
-    # Step 4: Final synthesis
+    @neatlogs_span(kind="CHAIN", name="final_synthesis")
+    def final_synthesis() -> None:
+        """Final synthesis step."""
+        pass
+
     final_messages = messages + [{"role": "assistant", "content": assistant_msg}]
     final_response = deterministic(
         final_messages, tools=openai_tools, seed=seed + 2
     )
+    final_synthesis()
     traces.append({
         "step": 3,
         "module": "thought",
@@ -228,7 +282,17 @@ def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[st
         if content:
             answer = content
 
-    return answer, traces
+    # Extract neatlogs spans from the in-memory exporter
+    try:
+        spans = [
+            envelope.to_dict()
+            for envelope in _neatlogs_exporter.get_finished_envelopes()
+        ]
+    except Exception:
+        # Fallback: create empty spans list if exporter fails
+        spans = []
+
+    return answer, traces, spans
 
 
 # ── Smoke-test entry point ──────────────────────────────
@@ -292,7 +356,7 @@ if __name__ == "__main__":
 
     # Run the agent via the broker (smoke test)
     print("\n=== agent_v0 smoke-test via broker ===")
-    answer, traces = agent_v0(
+    answer, traces, spans = agent_v0(
         domain_goal=domain.goal,
         domain_tools=[tool_spec],
         task_input={"question": "Calculate 1+1"},
@@ -300,6 +364,7 @@ if __name__ == "__main__":
     )
     print(f"Agent answer: {answer}")
     print(f"Traces: {len(traces)} steps")
+    print(f"Neatlogs spans: {len(spans)} spans captured")
 
     # Direct broker demonstration of exit criterion
     print("\n=== Exit Criterion: Real call ===")

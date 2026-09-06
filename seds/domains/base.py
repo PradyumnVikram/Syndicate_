@@ -6,12 +6,13 @@ for the entire SEDS pipeline. Keep field names and types exact.
 from __future__ import annotations
 
 import abc
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 
 @dataclass(frozen=True)
 class Task:
+    """Main task instance (includes reference)."""
     task_id: str
     inputs: dict[str, Any]
     reference: Any  # ground truth — HOST-SIDE ONLY, never mounted into a sandbox
