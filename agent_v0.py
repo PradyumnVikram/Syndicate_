@@ -134,7 +134,7 @@ def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[st
         seed: Deterministic seed for the deterministic tier
 
     Returns:
-        (answer, traces) — the final answer string and a list of trace dicts
+        (answer, traces, spans) — the final answer string, trace list, and neatlogs span list
     """
     traces: list[dict] = []
 
@@ -206,7 +206,15 @@ def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[st
     })
 
     if not response.get("ok"):
-        return f"Error: {response.get('error', 'unknown')}", traces
+        # Extract spans even on early return for consistent 3-tuple return
+        try:
+            spans = [
+                envelope.to_dict()
+                for envelope in _neatlogs_exporter.get_finished_envelopes()
+            ]
+        except Exception:
+            spans = []
+        return f"Error: {response.get('error', 'unknown')}", traces, spans
 
     assistant_msg = response["response"]["content"]
 
