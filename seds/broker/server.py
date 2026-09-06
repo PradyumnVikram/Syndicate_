@@ -23,7 +23,9 @@ from seds.executor.tracedb import get_connection
 try:
     from dotenv import load_dotenv
     _env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
-    load_dotenv(_env_path, override=True)  # Override stale environment variables
+    # CRITICAL: use override=True to prevent stale environment variables from overriding
+    # the fresh keys in .env. TIER_ROUTES is captured at module import time.
+    load_dotenv(_env_path, override=True)
 except ImportError:
     _env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
     if os.path.exists(_env_path):

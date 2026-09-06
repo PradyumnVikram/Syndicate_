@@ -68,9 +68,21 @@ def call(tier: str, messages: list[dict], tools: list[dict] | None = None,
 
 # Convenience wrappers
 def deterministic(messages: list[dict], tools: list[dict] | None = None,
-                  seed: int = 0, max_tokens: int = 2000) -> dict:
-    """Call the deterministic tier (glm-4-7-flash)."""
-    return call("deterministic", messages, tools, seed=seed, max_tokens=max_tokens)
+                  seed: int = 0, max_tokens: int = 2000, socket_path: str = SOCKET_PATH) -> dict:
+    """Call the deterministic tier (glm-4-7-flash).
+
+    Args:
+        messages: list of message dicts (role, content)
+        tools: optional list of tool definitions
+        seed: seed for deterministic tier
+        max_tokens: max tokens to generate
+        socket_path: path to the broker Unix socket
+
+    Returns:
+        Broker response dict with ok, cached, resolved_model, response,
+        input_tokens, output_tokens, reasoning_tokens, cached_tokens, cost_usd
+    """
+    return call("deterministic", messages, tools, seed=seed, max_tokens=max_tokens, socket_path=socket_path)
 
 
 def reasoner(messages: list[dict], tools: list[dict] | None = None,

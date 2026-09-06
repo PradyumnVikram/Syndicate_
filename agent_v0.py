@@ -18,7 +18,7 @@ from neatlogs import span as neatlogs_span
 from neatlogs import init as neatlogs_init
 from neatlogs import InMemoryDiagnosticSpanExporter
 
-from seds.runtime.llm import deterministic
+from seds.runtime.llm import deterministic, SOCKET_PATH
 
 # Initialize neatlogs for offline sandbox execution with in-memory exporter
 # Create a TracerProvider with the in-memory exporter
@@ -125,7 +125,7 @@ def safe_eval_arithmetic(expr: str) -> float | None:
 @neatlogs_span(kind="AGENT")
 def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[str, Any],
              seed: int = 42, rollout_id: str = None, node_id: str = None, task_id: str = None,
-             broker: object = None) -> tuple[str, list[dict], list[dict]]:
+             broker: object = None, socket_path: str = SOCKET_PATH) -> tuple[str, list[dict], list[dict]]:
     """Run the domain-parametric ReAct/CoT agent.
 
     Args:
@@ -137,6 +137,7 @@ def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[st
         node_id: Optional node ID for trace recording
         task_id: Optional task ID for trace recording
         broker: Optional Broker instance for tool-call recording
+        socket_path: Optional path to the broker Unix socket
 
     Returns:
         (answer, traces, spans) — the final answer string, trace list, and neatlogs span list
@@ -200,7 +201,7 @@ def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[st
         """Initial reasoning call via the broker."""
         pass
 
-    response = deterministic(messages, tools=openai_tools, seed=seed)
+    response = deterministic(messages, tools=openai_tools, seed=seed, socket_path=socket_path)
     initial_reasoning()
 
     traces.append({
@@ -355,7 +356,7 @@ Now continue reasoning based on this result."""
 
     final_messages = messages + [{"role": "assistant", "content": assistant_msg}]
     final_response = deterministic(
-        final_messages, tools=openai_tools, seed=seed + 2
+        final_messages, tools=openai_tools, seed=seed + 2, socket_path=socket_path
     )
     final_synthesis()
     traces.append({
