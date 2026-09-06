@@ -5,6 +5,7 @@ This domain implements exact-match local QA with Multi-hop QA-style tasks
 """
 
 from typing import Any, Callable, List
+from dataclasses import replace
 from seds.domains.base import TaskDomain, Task, Score, ToolSpec
 
 
@@ -57,11 +58,15 @@ class MultiHopQA_Domain(TaskDomain):
     Requires combining information from web search and calculation tools.
     """
 
-    def __init__(self):
+    def __init__(self, tools=None, train_tasks=None, val_tasks=None):
         """Initialize the domain with task specifications."""
-        self.tools = MULTIHOP_TOOLS
-        self.train_tasks = self._create_training_tasks()
-        self.val_tasks = self._create_validation_tasks()
+        if tools is None:
+            tools = MULTIHOP_TOOLS
+        if train_tasks is None:
+            train_tasks = self._create_training_tasks()
+        if val_tasks is None:
+            val_tasks = self._create_validation_tasks()
+        super().__init__(name=self.name, goal=self.goal, tools=tools, train_tasks=train_tasks, val_tasks=val_tasks, evaluate=self.evaluate)
 
     def _create_training_tasks(self) -> List[Task]:
         """Create 3 training tasks for learning."""
