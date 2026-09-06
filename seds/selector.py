@@ -160,7 +160,11 @@ class ParetoFrontier:
         for metric_name in candidate.any_metric:
             cand_value = candidate.any_metric[metric_name]
             new_value = new.any_metric.get(metric_name, cand_value)
-            
+
+            # Skip non-numeric values (e.g., metadata strings)
+            if not isinstance(cand_value, (int, float)) or not isinstance(new_value, (int, float)):
+                continue
+
             # If new value is less than or equal for all metrics, new dominates
             if new_value < cand_value - 1e-9:
                 return False
