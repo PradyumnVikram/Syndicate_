@@ -62,6 +62,7 @@ class MetricsSnapshot:
     coverage_score: float
     novelty_score: float
     any_metric: Dict[str, float] = field(default_factory=dict)
+    node_id: str = ""
 
 @dataclass
 class SyntheticNode:
@@ -105,28 +106,40 @@ class ParetoFrontier:
     def add(self, snapshot: MetricsSnapshot, node_id: str):
         """
         Add a snapshot to the Pareto frontier.
-        
+
         Args:
             snapshot: The metrics snapshot to add
             node_id: The node associated with this snapshot
         """
+        # Attach node_id to snapshot before using it in comparisons
+        # This is required for get_dominant_node() and removal-by-id logic
+        snapshot = MetricsSnapshot(
+            node_id=node_id,
+            success_rate=snapshot.success_rate,
+            average_reward=snapshot.average_reward,
+            standard_deviation=snapshot.standard_deviation,
+            coverage_score=snapshot.coverage_score,
+            novelty_score=snapshot.novelty_score,
+            any_metric=snapshot.any_metric
+        )
+
         # Remove existing entries for this node if any
-        self._frontier = [s for s in self._frontier 
+        self._frontier = [s for s in self._frontier
                          if getattr(s, 'node_id', '') != node_id]
-        
+
         # Remove dominated entries
         self._frontier = [
-            s for s in self._frontier 
+            s for s in self._frontier
             if not self._is_dominated(s, snapshot)
         ]
-        
+
         # Add new snapshot
         self._frontier.append(snapshot)
-        
+
         # Update metrics map
         for metric_name, metric_value in snapshot.any_metric.items():
             self._metrics_map[metric_name].append(snapshot)
-        
+
         # Sort frontier (in-place for efficiency)
         self._frontier.sort(key=lambda s: (
             -s.any_metric.get('coverage_score', 0.0),
@@ -979,6 +992,9 @@ class SEDSSelector:
             snapshot: The metrics snapshot
             parent_id: Optional parent node ID
         """
+        # Increment total nodes created
+        self._total_nodes_created += 1
+
         # Add to archive
         archive_item = ArchiveItem(
             node=node,
@@ -986,7 +1002,7 @@ class SEDSSelector:
             lineage_id=parent_id
         )
         self.archive.add(archive_item, parent_id=parent_id)
-        
+
         # Add to Pareto frontier
         self.pareto_frontier.add(snapshot, node_id=node.node_id)
         
