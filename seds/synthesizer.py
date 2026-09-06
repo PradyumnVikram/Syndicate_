@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -54,9 +55,9 @@ class MutationResult:
     ast_matches_parent: bool  # AST-level similarity
     duplicate: bool  # Duplicate of existing mutation in queue
 
-
 # ──── DEPENDENCIES ────────────────────────────────────────────────────────────
 # Import broker and domain contracts
+# seds must be on the Python path for broker imports to work
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from seds.broker.server import Broker
 from seds.domains.base import AgentSystem, RolloutResult, Score
