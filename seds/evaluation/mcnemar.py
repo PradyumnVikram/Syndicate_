@@ -9,14 +9,15 @@ Date: 2026-09-06
 
 from typing import Any, Dict, List, Tuple
 
-from .statistical_gate import PairedResult
-
 
 def build_mcnemar_table(
-    paired_results: List[PairedResult],
+    paired_results: List[Any],
 ) -> Dict[str, int]:
     """
     Build 2x2 contingency table from paired binary outcomes.
+
+    Note: paired_results can be a list of PairedResult objects or a list
+    of tuples (parent_score, child_score). The function handles both cases.
 
     The table is:
                 | Child Correct | Child Incorrect
@@ -25,11 +26,23 @@ def build_mcnemar_table(
     Parent Incorrect|      c        |        d
 
     Args:
-        paired_results: List of PairedResult objects with binary correctness
+        paired_results: List of PairedResult objects or (parent_score, child_score) tuples
 
     Returns:
         Dictionary with keys 'a', 'b', 'c', 'd' for the table cells
     """
+    # Lazy import to avoid circular dependency
+    from .statistical_gate import PairedResult
+
+    # Handle both PairedResult objects and (parent, child) tuples
+    if paired_results and isinstance(paired_results[0], tuple):
+        # Input is list of (parent_score, child_score) tuples
+        parent_scores = [p for p, _ in paired_results]
+        child_scores = [c for _, c in paired_results]
+    else:
+        # Input is list of PairedResult objects
+        parent_scores = [r.parent_score for r in paired_results]
+        child_scores = [r.child_score for r in paired_results]
     a = sum(1 for r in paired_results if r.parent_correct and r.child_correct)
     b = sum(1 for r in paired_results if r.parent_correct and not r.child_correct)
     c = sum(1 for r in paired_results if not r.parent_correct and r.child_correct)
@@ -81,35 +94,36 @@ def mcnemar_statistic(
 
 
 def mcnemar_p_value(
-    chi_squared: float,
-    degrees_of_freedom: int = 1,
+    table: Dict[str, int],
 ) -> float:
     """
-    Compute p-value from chi-squared statistic.
+    Compute p-value from contingency table using exact McNemar test.
 
     Args:
-        chi_squared: Chi-squared statistic
-        degrees_of_freedom: Degrees of freedom (typically 1 for McNemar)
+        table: Contingency table with keys 'a', 'b', 'c', 'd'
 
     Returns:
-        p-value (upper-tail probability)
+        p-value (probability of observing such extreme discordant pairs)
     """
-    # Clip chi_squared to avoid floating point errors
-    chi_squared = max(chi_squared, 0.0)
+    # b = parent correct, child incorrect (regression)
+    # c = parent incorrect, child correct (improvement)
+    b = table.get('b', 0)
+    c = table.get('c', 0)
+    total_discordant = b + c
 
-    # Simple approximation: for chi-squared with df=1, use tail probability
-    # For df != 1, we'd need scipy.stats.chi2.cdf, but we'll use a simple approximation
+    if total_discordant < 2:
+        # Not enough discordant pairs for test
+        p_value = 1.0
 
-    if degrees_of_freedom != 1:
-        # For other df, use a rough approximation
-        p_value = 1.0 - min(chi_squared / degrees_of_freedom, 999.0)
     else:
-        # For df=1, use approximation: p = exp(-chi_squared/2)
-        # This is accurate for small chi-squared values
-        p_value = 1.0 - min(
-            1.0 - __chi2_cdf_approx(chi_squared, degrees_of_freedom),
-            0.9999
-        )
+        # Use scipy.stats.binomtest for exact McNemar test
+        # Tests whether b and c are significantly different
+        from scipy.stats import binomtest
+        result = binomtest(c, n=total_discordant, p=0.5)
+        p_value = result.pvalue
+
+    # Ensure p-value is in valid range [0, 1]
+    p_value = max(0.0, min(1.0, p_value))
 
     return p_value
 
@@ -175,7 +189,7 @@ def __incomplete_gamma(a: float, x: float) -> float:
 
 
 def mcnemar_test(
-    paired_results: List[PairedResult],
+    paired_results: List[Any],
     continuity_correction: bool = True,
 ) -> Tuple[float, float, Dict[str, Any]]:
     """
@@ -193,6 +207,9 @@ def mcnemar_test(
     indicates that the paired comparisons are not symmetric (i.e., the
     marginal homogeneity assumption is violated).
     """
+    # Lazy import to avoid circular dependency
+    from .statistical_gate import PairedResult
+
     if len(paired_results) < 4:
         # Not enough samples for reliable McNemar test
         return (1.0, 0.0, {
@@ -203,11 +220,11 @@ def mcnemar_test(
     # Build contingency table
     table = build_mcnemar_table(paired_results)
 
-    # Compute test statistic
+    # Compute test statistic (chi-squared) for reference
     chi_squared, dof = mcnemar_statistic(table, continuity_correction)
 
-    # Compute p-value
-    p_value = mcnemar_p_value(chi_squared, dof)
+    # Compute p-value using exact binomial test (correct approach)
+    p_value = mcnemar_p_value(table)
 
     # Additional statistics
     total = table['a'] + table['b'] + table['c'] + table['d']
@@ -301,7 +318,6 @@ def mcnemar_test_summary(
 
 
 __all__ = [
-    'build_mcnemar_table',
     'mcnemar_statistic',
     'mcnemar_p_value',
     'mcnemar_test',

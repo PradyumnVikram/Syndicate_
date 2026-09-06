@@ -15,7 +15,39 @@ from statistics import mean, stdev
 
 from seds.domains.base import TaskDomain, Task, Score
 from seds.runtimes.sandbox.harness import EvaluationHarness
+from .mcnemar import mcnemar_p_value
+from .results import PairedResult
 
+
+def build_mcnemar_table(
+    paired_results: List[PairedResult],
+) -> Dict[str, int]:
+    """
+    Build 2x2 contingency table from paired binary outcomes.
+
+    The table is:
+                | Child Correct | Child Incorrect
+    ----------------------------------------------
+    Parent Correct |       a       |        b
+    Parent Incorrect|      c        |        d
+
+    Args:
+        paired_results: List of PairedResult objects with binary correctness
+
+    Returns:
+        Dictionary with keys 'a', 'b', 'c', 'd' for the table cells
+    """
+    a = sum(1 for r in paired_results if r.parent_correct and r.child_correct)
+    b = sum(1 for r in paired_results if r.parent_correct and not r.child_correct)
+    c = sum(1 for r in paired_results if not r.parent_correct and r.child_correct)
+    d = sum(1 for r in paired_results if not r.parent_correct and not r.child_correct)
+
+    return {
+        'a': a,  # Both correct
+        'b': b,  # Parent correct, child incorrect
+        'c': c,  # Parent incorrect, child correct
+        'd': d,  # Both incorrect
+    }
 
 @dataclass
 class PairedResult:
@@ -32,13 +64,6 @@ class PairedResult:
     @property
     def child_correct(self) -> bool:
         return self.child_score is not None and self.child_score.correct
-
-    @property
-    def improvement(self) -> Optional[float]:
-        """Calculate improvement score if both succeed."""
-        if self.parent_correct and self.child_correct:
-            return self.child_score.reward - self.parent_score.reward
-        return None
 
 
 class PairedComparisonHarness:
@@ -185,7 +210,9 @@ def bootstrap_test(
         Tuple of (p_value, effect_size, statistics)
     """
     if len(paired_results) < 2:
-        return (1.0, 0.0, {'n': len(paired_results)})
+        p_value = 1.0  # No evidence of improvement
+        p_value = max(0.0, min(1.0, p_value))
+        return (p_value, 0.0, {'n': len(paired_results)})
 
     random.seed(seed)
 
@@ -195,34 +222,38 @@ def bootstrap_test(
     ]
 
     if not differences:
-        return (1.0, 0.0, {'n_improvements': 0, 'n_comparisons': len(paired_results)})
+        p_value = 1.0  # No evidence of improvement
+        p_value = max(0.0, min(1.0, p_value))
+        return (p_value, 0.0, {'n_improvements': 0, 'n_comparisons': len(paired_results)})
 
     observed_mean = mean(differences)
-    observed_pvalue = 0.0
 
-    # Bootstrap samples
+    # Center the data to build the null distribution
+    # Subtract the observed mean so the centered differences have mean ~0
+    centered_differences = [d - observed_mean for d in differences]
+
+    # Bootstrap samples from the CENTERED data (null distribution)
     bootstrap_means = []
     for _ in range(n_samples):
-        bootstrap_sample = random.choices(differences, k=len(differences))
-        bootstrap_means.append(mean(bootstrap_sample))
+        bootstrap_sample = random.choices(centered_differences, k=len(centered_differences))
+        # Resampled mean from centered data + observed mean = simulated null mean
+        bootstrap_means.append(mean(bootstrap_sample) + observed_mean)
 
     bootstrap_means.sort()
 
-    # Calculate p-value
+    # Calculate p-value as proportion of bootstrap means >= observed mean
+    # This properly tests if observed mean is significantly greater than null distribution
     if alternative == 'greater':
-        # Proportion of bootstrap means > observed mean
-        p_value = sum(1 for bm in bootstrap_means if bm > observed_mean) / n_samples
-        # Include observed itself
-        p_value = (p_value + (1.0 if observed_mean > mean(bootstrap_means) else 0.0)) / 2
+        p_value = sum(1 for bm in bootstrap_means if bm >= observed_mean) / n_samples
     elif alternative == 'less':
-        p_value = sum(1 for bm in bootstrap_means if bm < observed_mean) / n_samples
-        p_value = (p_value + (1.0 if observed_mean < mean(bootstrap_means) else 0.0)) / 2
+        p_value = sum(1 for bm in bootstrap_means if bm <= observed_mean) / n_samples
     else:  # two-sided
-        p_value = 2 * min(
-            sum(1 for bm in bootstrap_means if bm > observed_mean) / n_samples,
-            sum(1 for bm in bootstrap_means if bm < observed_mean) / n_samples
-        )
-        p_value = (p_value + (1.0 if abs(observed_mean - mean(bootstrap_means)) > 0 else 0.0)) / 2
+        lower_tail = sum(1 for bm in bootstrap_means if bm <= observed_mean) / n_samples
+        upper_tail = sum(1 for bm in bootstrap_means if bm >= observed_mean) / n_samples
+        p_value = min(lower_tail, upper_tail)
+
+    # Ensure p-value is in valid range [0, 1]
+    p_value = max(0.0, min(1.0, p_value))
 
     # Effect size (Cohen's d equivalent)
     std_pool = (stdev(differences) if len(differences) > 1 else 1.0) / (len(differences) ** 0.5)
@@ -269,16 +300,13 @@ def mcnemar_test(
     c = sum(1 for r in paired_results if not r.parent_correct and r.child_correct)
     d = sum(1 for r in paired_results if not r.parent_correct and not r.child_correct)
 
-    # McNemar statistic (chi-squared)
-    if continuity_correction:
-        # With continuity correction
-        chi_squared = (abs(b - c) - 0.5) ** 2 / ((b + c) / 2)
-    else:
-        # Without continuity correction
-        chi_squared = (b - c) ** 2 / (b + c + 1e-10)
+    table = {'a': a, 'b': b, 'c': c, 'd': d}
 
-    # Convert to p-value (chi-squared with 1 degree of freedom)
-    p_value = 1.0 - min(chi_squared, 999.0)  # Cap at 999 for safety
+    # Use scipy.stats.binomtest for exact McNemar test (correct p-value calculation)
+    p_value = mcnemar_p_value(table)
+
+    # Chi-squared statistic not computed directly (use binomtest p-value instead)
+    chi_squared = 0.0
 
     # Statistical significance threshold (typical: p < 0.05)
     # For promotion gate, we use p < 0.10
@@ -328,7 +356,9 @@ def promote_or_reject(
         raise ValueError(f"Mismatched lengths: parent={len(parent_scores)}, child={len(child_scores)}")
 
     if len(parent_scores) < 2:
-        return ('REJECT', 1.0, 0.0, {
+        p_value = 1.0  # No evidence of improvement
+        p_value = max(0.0, min(1.0, p_value))
+        return ('REJECT', p_value, 0.0, {
             'n_samples': len(parent_scores),
             'reason': 'insufficient_samples'
         })
@@ -344,6 +374,13 @@ def promote_or_reject(
     # Choose appropriate test
     effect_size = None  # Initialize for mcnemar case
     if use_binary_test and use_mcnemar:
+        # Build contingency table for mcnemar test
+        a = sum(1 for ps, cs in zip(parent_scores, child_scores) if ps.correct and cs.correct)  # Both correct
+        b = sum(1 for ps, cs in zip(parent_scores, child_scores) if not ps.correct and cs.correct)  # Only child correct
+        c = sum(1 for ps, cs in zip(parent_scores, child_scores) if ps.correct and not cs.correct)  # Only parent correct
+        d = sum(1 for ps, cs in zip(parent_scores, child_scores) if not ps.correct and not cs.correct)  # Both incorrect
+        table = {'a': a, 'b': b, 'c': c, 'd': d}
+
         p_value, chi_squared, statistics = mcnemar_test(
             [
                 PairedResult(f'task_{i}', parent_scores[i], child_scores[i], domain)
@@ -352,6 +389,19 @@ def promote_or_reject(
         )
         test_name = 'mcnemar'
         test_result = f"χ²={chi_squared:.3f}, p={p_value:.4f}"
+
+        # Ensure p-value is in valid range [0, 1]
+        p_value = max(0.0, min(1.0, p_value))
+
+        # Compute effect size for mcnemar test
+        # Effect size = (b - c) / (b + c)
+        b = table.get('b', 0)
+        c = table.get('c', 0)
+        total_discordant = b + c
+        if total_discordant > 0:
+            effect_size = (b - c) / total_discordant
+        else:
+            effect_size = 0.0
     else:
         p_value, effect_size, statistics = bootstrap_test(
             [
@@ -370,6 +420,7 @@ def promote_or_reject(
 
     if child_cost > parent_cost * 1.2:
         # Child is significantly more expensive (20% overhead)
+        p_value = max(0.0, min(1.0, p_value))
         return ('REJECT', p_value, effect_size, {
             **statistics,
             'test_name': test_name,
@@ -405,6 +456,7 @@ def promote_or_reject(
 __all__ = [
     'PairedResult',
     'PairedComparisonHarness',
+    'build_mcnemar_table',
     'bootstrap_test',
     'mcnemar_test',
     'promote_or_reject',

@@ -12,12 +12,12 @@ Date: 2026-09-06
 """
 
 from .statistical_gate import (
-    PairedResult,
     PairedComparisonHarness,
     bootstrap_test,
     mcnemar_test,
     promote_or_reject,
 )
+from .results import PairedResult
 from .bootstrap import (
     bootstrap_resample,
     bootstrap_mean,

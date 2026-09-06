@@ -10,8 +10,7 @@ Date: 2026-09-06
 import random
 from typing import Any, Callable, Dict, List, Tuple
 from statistics import mean, stdev
-
-from .statistical_gate import PairedResult
+from .results import PairedResult
 
 
 def bootstrap_resample(

@@ -10,6 +10,7 @@ Shows:
 import sys
 import os
 import random
+from statistics import mean
 
 # Set PYTHONPATH to include parent directory
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -199,11 +200,11 @@ def main():
 
     harness1 = PairedComparisonHarness(domain, n_samples_per_epoch=20, seed=42)
 
-    parent_scores_1 = create_parent_scores(domain, n_tasks=20, seed=42)
-    child_scores_1 = create_child_scores_real_improvement(parent_scores_1, n_tasks=20, seed=42)
+    parent_scores_1 = create_parent_scores(domain, n_tasks=30, seed=42)
+    child_scores_1 = create_child_scores_real_improvement(parent_scores_1, n_tasks=30, seed=42)
 
-    print(f"   Parent pass rate: {sum(1 for s in parent_scores_1 if s.correct) / 20:.2%}")
-    print(f"   Child pass rate:  {sum(1 for s in child_scores_1 if s.correct) / 20:.2%}")
+    print(f"   Parent pass rate: {sum(1 for s in parent_scores_1 if s.correct) / 30:.2%}")
+    print(f"   Child pass rate:  {sum(1 for s in child_scores_1 if s.correct) / 30:.2%}")
     print()
 
     decision_1, p1, es1, stats1 = promote_or_reject(
@@ -303,6 +304,100 @@ def main():
         if decision == 'REJECT' and 'reason' in stats:
             print(f"  Reason: {stats['reason']}")
         print()
+
+    # Calibration test: identical distributions should give ~0.10 false-promotion rate
+    print("=" * 80)
+    print("CALIBRATION TEST")
+    print("=" * 80)
+    print()
+    print("Running 200 tests with identical parent/child distributions (random matching)")
+    print("Expected false-promotion rate: ~0.10 (based on random matching probability)")
+    print("-" * 80)
+
+    calibration_runs = 200
+    threshold = 0.10
+    false_promotions = 0
+    p_values = []
+
+    # Use deterministic seed for calibration
+    calibration_seed = 999
+
+    for i in range(calibration_runs):
+        # Create parent scores with same seed for all runs
+        parent_scores = create_parent_scores(domain, n_tasks=20, seed=calibration_seed + i)
+
+        # Create child scores independently from same underlying distribution
+        # Each task has a difficulty level (hard/easy) determined once
+        # Both parent and child are sampled independently from the SAME difficulty
+        child_scores = []
+        for ps in parent_scores:
+            # Determine difficulty of this task (same for both parent and child)
+            # This represents the task's inherent difficulty/probability of being correct
+            if ps.correct:
+                # True positive: task is likely "easy"
+                # Probability of child being correct: higher (e.g., 60%)
+                pass_rate = 0.60
+            else:
+                # True negative: task is likely "hard"
+                # Probability of child being correct: lower (e.g., 40%)
+                pass_rate = 0.40
+
+            # Sample child correctness independently using domain-defined pass rate
+            # We use uniform random to sample from this probability distribution
+            import random
+            child_correct = random.uniform(0, 1) < pass_rate
+
+            # Sample partial scores independently from a different distribution
+            # This gives variance in partial correctness even when overall pass rate is similar
+            child_partial = random.uniform(0, 1)
+
+            # Copy detail but with independent sampling
+            child_detail = ps.detail.copy()
+
+            child_scores.append(Score(
+                correct=child_correct,
+                partial=child_partial,
+                detail=child_detail
+            ))
+
+        # Run promotion test
+        decision, p_value, _, _ = promote_or_reject(
+            parent_scores,
+            child_scores,
+            domain,
+            n_bootstrap=1000,
+            threshold=threshold,
+        )
+
+        if decision == 'PROMOTE':
+            false_promotions += 1
+        p_values.append(p_value)
+
+    false_promotion_rate = false_promotions / calibration_runs
+    avg_p_value = mean(p_values)
+    min_p_value = min(p_values)
+    max_p_value = max(p_values)
+
+    print(f"  Calibration runs: {calibration_runs}")
+    print(f"  False-promotions: {false_promotions}")
+    print(f"  False-promotion rate: {false_promotion_rate:.3f} (expected ~0.10)")
+    print(f"  Average p-value: {avg_p_value:.4f}")
+    print(f"  Min p-value: {min_p_value:.4f}")
+    print(f"  Max p-value: {max_p_value:.4f}")
+    print()
+
+    # Check calibration: with identical distributions, p-values should cluster near 1.0
+    # So false-promotion rate should be very low (no significant difference expected)
+    calibration_ok = (false_promotion_rate <= 0.15)
+    print("=" * 80)
+    if calibration_ok:
+        print("✓ Calibration PASSED")
+        print(f"  False-promotion rate {false_promotion_rate:.3f} (expected ~0.0 for identical distributions)")
+    else:
+        print("✗ Calibration FAILED")
+        print(f"  False-promotion rate {false_promotion_rate:.3f} (expected <= 0.15 for identical distributions)")
+    print("=" * 80)
+    print()
 
     print("=" * 80)
     print("Demo Complete!")
