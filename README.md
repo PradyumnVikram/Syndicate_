@@ -177,8 +177,7 @@ report = generator.generate_report()
 generator.save_json(report, Path("results/comparison.json"))
 ```
 
-The synthesizer provides mutation operators you can inspect manually:
-
+The synthesizer provides these mutation operators for manual exploration:
 - `prompt_edit`: Modify system prompt, exemplars, prohibition rules
 - `tool_edit`: Modify tool wrappers, schemas, validators
 - `memory_edit`: Modify scratchpad, trace retrieval
