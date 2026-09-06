@@ -17,6 +17,8 @@ import uuid
 from dataclasses import dataclass, fields
 from typing import Any
 
+from seds.executor.tracedb import get_connection
+
 # Load .env file for API credentials
 try:
     from dotenv import load_dotenv
@@ -541,3 +543,26 @@ class Broker:
 
     def get_call_log(self) -> list[dict]:
         return [_dataclass_to_dict(e) for e in self.call_log]
+
+    def record_tool_call(self, rollout_id: str, node_id: str, task_id: str,
+                         tool_name: str, arguments: dict, result: dict) -> None:
+        """Record a tool call to the trace database.
+
+        Args:
+            rollout_id: The rollout ID this tool call belongs to
+            node_id: The node ID
+            task_id: The task ID
+            tool_name: Name of the tool
+            arguments: Tool arguments (stringified for storage)
+            result: Tool result (stringified for storage)
+        """
+        conn = get_connection("data/trace_db.sqlite")
+        conn.execute(
+            """INSERT INTO tool_calls
+               (tool_call_id, rollout_id, span_id, tool_name, arguments, result, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (str(uuid.uuid4()), rollout_id, None, tool_name,
+             json.dumps(arguments), json.dumps(result), time.time()),
+        )
+        conn.commit()
+        conn.close()
