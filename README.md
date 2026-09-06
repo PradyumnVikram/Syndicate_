@@ -49,10 +49,20 @@ This project is in early stages with core domain contracts, broker routing, and 
 ### Report Generation
 - `seds.report.comparison_generator` - Generates comparison reports
 
+### Self-Improvement (Phases E-F)
+- `seds.synthesizer` - Code-space mutation operator (Phase E)
+  - Mutation operators: prompt_edit, tool_edit, memory_edit, orchestration_edit, efficiency_edit
+  - Structured JSON schema for mutation requests
+
+- `seds.selector` - Self-improving agent factory (Phase F)
+  - Policy types: EPSILON, THOMPSON, EXP3, UCB
+  - Pareto frontier optimization
+  - Node event tracking and performance evaluation
+
 ## Quick Start
 
 ```bash
-# Setup environment
+# Setup environment (creates/copies .env from src/project)
 ./scripts/bootstrap.sh
 
 # Run smoke test (demonstrates exit criterion: real LLM call + cached replay)
