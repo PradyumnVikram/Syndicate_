@@ -788,37 +788,51 @@ class CladeBackpropagator:
 
     def _get_ancestors(self, node_id: str, archive: ArchiveTree) -> List[str]:
         """
-        Get all ancestor clade IDs from a node (including the node itself).
+        Get the ancestor chain for a node (including the node itself).
         
         Args:
-            node_id: The node ID to get ancestors for
-            archive: The archive tree for node lookups
+            node_id: The node to get ancestors for
+            archive: The archive tree to query
             
         Returns:
             List of ancestor clade IDs (node itself first, then ancestors)
+            
+        Raises:
+            ValueError: If a cycle is detected in the ancestor chain
         """
         ancestors = []
         current_id = node_id
+        visited = set()  # Detect cycles
+        max_iterations = len(archive._items) + 1  # Safety break (one more than total nodes)
+        iterations = 0  # Iteration counter for safety break
 
         # Get ancestors through the ancestor chain
-        while True:
+        while iterations < max_iterations:
+            iterations += 1
+
+            # Check for cycle detection
+            if current_id in visited:
+                # Detected a cycle - this indicates malformed graph (node in its own lineage)
+                raise ValueError(f"Cycle detected in ancestor chain starting from node '{node_id}'")
+            visited.add(current_id)
+
             item = archive._items.get(current_id)
             if item is None:
-                break
+                # No more nodes in archive - but we should have hit a root node first
+                # Hitting this cap indicates malformed graph without proper root
+                raise ValueError(f"Malformed ancestor chain: reached end of archive at node '{current_id}' without finding root")
 
             ancestors.append(current_id)
 
-            # Move to parent
-            parent_ids = []
-            for pid, children in archive._children.items():
-                if current_id in children:
-                    parent_ids.append(pid)
-                    break
-
-            if not parent_ids:
+            # Use the node's stored lineage (parents tuple) instead of reverse-scanning _children
+            # This is O(1) per hop and unambiguous
+            if item.node.parents:
+                # Prefer the first parent for deterministic behavior
+                # In a real evolutionary archive, a node should have a clear lineage
+                current_id = item.node.parents[0]
+            else:
+                # No parent (root node) - successfully reached root
                 break
-
-            current_id = parent_ids[0]
 
         ancestors.reverse()
         return ancestors
