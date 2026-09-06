@@ -28,7 +28,7 @@ sys.path.insert(0, project_root)
 # Set up environment
 load_dotenv(os.path.join(project_root, ".env"), override=True)
 
-from seds.domains.base import Task, Score, AgentSystem, RolloutResult, ToolSpec
+from seds.domains.base import Task, Score, AgentSystem, RolloutResult, ToolSpec, TaskDomain
 from seds.domains.arithmetic import Arithmetic_Domain, evaluate_arithmetic
 from seds.tools_arithmetic import CALC_TOOL, calc
 from seds.executor.runner import DockerExecutor
@@ -266,11 +266,11 @@ def main():
     print("  METRIC: Accuracy on normalized numeric answers")
     print("=" * 80 + "\n")
 
-    # Initialize neatlogs
-    neatlogs_init(
-        disable_export=True,
-        tracer_provider=_tracer_provider,
-    )
+    # Initialize neatlogs (skipping due to config conflict)
+    # neatlogs_init(
+    #     disable_export=True,
+    #     tracer_provider=_tracer_provider,
+    # )
 
     # Create arithmetic domain
     domain = Arithmetic_Domain()

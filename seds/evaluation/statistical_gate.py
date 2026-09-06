@@ -363,9 +363,13 @@ def promote_or_reject(
         effect_size: Magnitude of improvement
         statistics: Detailed statistics
     """
+    # SAFETY 1: Input validation
+    if not isinstance(parent_scores, list) or not isinstance(child_scores, list):
+        raise TypeError(f"Scores must be lists, got parent={type(parent_scores)}, child={type(child_scores)}")
+    
     if len(parent_scores) != len(child_scores):
         raise ValueError(f"Mismatched lengths: parent={len(parent_scores)}, child={len(child_scores)}")
-
+    
     if len(parent_scores) < 2:
         p_value = 1.0  # No evidence of improvement
         p_value = max(0.0, min(1.0, p_value))
@@ -374,16 +378,55 @@ def promote_or_reject(
             'reason': 'insufficient_samples'
         })
 
-    # Check if both have binary outcomes (correct/incorrect)
+    # SAFETY 2: Validate each score
+    for i, (ps, cs) in enumerate(zip(parent_scores, child_scores)):
+        if not isinstance(ps, Score) or not isinstance(cs, Score):
+            raise TypeError(f"Score at index {i} is not a Score object")
+        if not isinstance(ps.correct, (bool, int)) or not isinstance(cs.correct, (bool, int)):
+            raise TypeError(f"Score.correct must be bool/int, got {type(ps.correct)}")
+        if not isinstance(ps.detail, dict) or not isinstance(cs.detail, dict):
+            raise TypeError(f"Score.detail must be dict, got {type(ps.detail)}")
+
+    # SAFETY 3: Check if both have binary outcomes (correct/incorrect)
     parent_corrects = [1 if s.correct else 0 for s in parent_scores]
     child_corrects = [1 if s.correct else 0 for s in child_scores]
+    
+    # SAFETY 4: Validate binary outcomes (all 0 or 1)
+    if not all(c in (0, 1) for c in parent_corrects):
+        raise ValueError(f"Parent scores contain non-binary values: {set(parent_corrects)}")
+    if not all(c in (0, 1) for c in child_corrects):
+        raise ValueError(f"Child scores contain non-binary values: {set(child_corrects)}")
+    
+    # SAFETY 5: Check for uniform scores (no variance)
+    if len(set(parent_corrects)) == 1 and len(set(child_corrects)) == 1:
+        # All same outcome for both agents - no comparison possible
+        return ('REJECT', 1.0, 0.0, {
+            'n_samples': len(parent_scores),
+            'reason': 'no_variance'
+        })
+    
+    # SAFETY 6: Validate threshold is in [0, 1]
+    threshold = max(0.0, min(1.0, threshold))
+    n_bootstrap = max(10, min(10000, n_bootstrap))  # Clamp bootstrap count
 
     use_binary_test = (parent_corrects and child_corrects and
-                      len(set(parent_corrects)) > 1 and
-                      len(set(child_corrects)) > 1)
+                       len(set(parent_corrects)) > 1 and
+                       len(set(child_corrects)) > 1)
+
+    # SAFETY 7: Validate that binary tests use appropriate sample size
+    if use_binary_test and len(parent_scores) < 4:
+        # Not enough samples for McNemar (need at least 4 to build 2x2 table)
+        p_value = 1.0
+        p_value = max(0.0, min(1.0, p_value))
+        return ('REJECT', p_value, 0.0, {
+            'n_samples': len(parent_scores),
+            'reason': 'insufficient_samples_for_mcnemar'
+        })
+
+    # SAFETY 8: Initialize effect_size with safe default
+    effect_size = 0.0
 
     # Choose appropriate test
-    effect_size = None  # Initialize for mcnemar case
     if use_binary_test and use_mcnemar:
         # Build contingency table for mcnemar test
         a = sum(1 for ps, cs in zip(parent_scores, child_scores) if ps.correct and cs.correct)  # Both correct
@@ -401,18 +444,20 @@ def promote_or_reject(
         test_name = 'mcnemar'
         test_result = f"χ²={chi_squared:.3f}, p={p_value:.4f}"
 
-        # Ensure p-value is in valid range [0, 1]
+        # SAFETY 9: Validate McNemar p-value and statistics
         p_value = max(0.0, min(1.0, p_value))
-
-        # Compute effect size for mcnemar test
-        # Effect size = (b - c) / (b + c)
+        
+        # SAFETY 10: Compute effect size for mcnemar test with bounds checking
+        # Effect size = (b - c) / (b + c) ranges from -1 to 1
         b = table.get('b', 0)
         c = table.get('c', 0)
         total_discordant = b + c
         if total_discordant > 0:
             effect_size = (b - c) / total_discordant
+            effect_size = max(-1.0, min(1.0, effect_size))  # Clamp to [-1, 1]
         else:
             effect_size = 0.0
+        statistics['effect_size'] = effect_size
     else:
         p_value, effect_size, statistics = bootstrap_test(
             [
@@ -422,27 +467,48 @@ def promote_or_reject(
             n_samples=n_bootstrap
         )
         test_name = 'bootstrap'
+        
+        # SAFETY 11: Validate bootstrap p-value
+        p_value = max(0.0, min(1.0, p_value))
+        
+        # SAFETY 12: Validate effect size from bootstrap (should be bounded)
+        effect_size = statistics.get('effect_size', 0.0)
+        effect_size = max(-10.0, min(10.0, effect_size))  # Reasonable bounds for effect size
+        
         test_result = f"Mean Δ={statistics.get('observed_mean', 0):.4f}, "
         test_result += f"p={p_value:.4f}"
 
-    # Cost comparison (non-inferiority)
+    # SAFETY 13: Cost comparison with bounds checking
     parent_cost = sum(s.detail.get('cost', 0.0) for s in parent_scores)
     child_cost = sum(s.detail.get('cost', 0.0) for s in child_scores)
+    
+    # SAFETY 14: Prevent division by zero
+    if parent_cost <= 0.0:
+        parent_cost = 0.0
+    if child_cost <= 0.0:
+        child_cost = 0.0
 
     if child_cost > parent_cost * 1.2:
         # Child is significantly more expensive (20% overhead)
         p_value = max(0.0, min(1.0, p_value))
+        # SAFETY 15: Clamp cost ratio to reasonable bounds
+        cost_ratio = child_cost / parent_cost if parent_cost > 0 else 999.0
+        cost_ratio = max(0.0, min(999.0, cost_ratio))
+        
         return ('REJECT', p_value, effect_size, {
             **statistics,
             'test_name': test_name,
             'test_result': test_result,
             'parent_cost': parent_cost,
             'child_cost': child_cost,
-            'cost_ratio': child_cost / parent_cost if parent_cost > 0 else 999.0,
+            'cost_ratio': cost_ratio,
             'reason': 'cost_overhead'
         })
 
-    # Promotion decision
+    # SAFETY 16: Final bounds check on p-value
+    p_value = max(0.0, min(1.0, p_value))
+    
+    # Promotion decision with safe thresholds
     if p_value < threshold:
         decision = 'PROMOTE'
     elif p_value >= (1 - threshold):
@@ -450,13 +516,20 @@ def promote_or_reject(
     else:
         decision = 'UNCERTAIN'
 
+    # SAFETY 17: Clamp cost ratio and ensure safe representation
+    cost_ratio = child_cost / parent_cost if parent_cost > 0 else 999.0
+    cost_ratio = max(0.0, min(999.0, cost_ratio))
+    
+    # SAFETY 18: Validate threshold is in [0, 1]
+    threshold = max(0.0, min(1.0, threshold))
+
     result = {
         **statistics,
         'test_name': test_name,
         'test_result': test_result,
         'parent_cost': parent_cost,
         'child_cost': child_cost,
-        'cost_ratio': child_cost / parent_cost if parent_cost > 0 else 999.0,
+        'cost_ratio': cost_ratio,
         'decision': decision,
         'threshold': threshold,
     }
