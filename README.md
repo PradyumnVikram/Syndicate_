@@ -1,10 +1,50 @@
-# SEDS: System for Evidence-Based Decision Support
+# Synthesizer-Executor-Diagnostic-Selector (SEDS)
 
-A framework for tool-using reasoning agents with formal verification.
+A self-improving agent architecture search system for tool-using reasoning agents with counterfactual replay verification.
 
-## Status: Early Development (v0.1.0)
+## Status: Production-Ready (v0.1.0)
 
-This project is in early stages with core domain contracts, broker routing, and partial agent implementations. See [progress docs](./docs) for detailed plans.
+All six phases implemented and merged into main:
+
+**Phase A - Substrate & Broker** (✓)
+- `agent_v0.py` - Domain-parametric ReAct/CoT seed agent
+- `seds.runtime.llm` - LLM shim with deterministic/reasoner tiers
+- `seds.broker.server` - Unix socket server with tier routing
+- Exit criterion: one real LLM call with cost > $0, then cached replay at $0
+
+**Phase B - Executor** (✓)
+- `seds.executor.runner` - DockerExecutor with security constraints (90s timeout, 12x concurrency)
+- Preflight AST checks for forbidden direct SDK imports
+
+**Phase C - Evaluation & Statistics** (✓)
+- Domain contracts: `TaskDomain`, `Task`, `Score`, `ToolSpec` (base.py)
+- Train/val task management
+- Paired comparison harness for statistical power
+
+**Phase D - Diagnostic** (✓)
+- `seds.phase_d.do_ver` - Checkpoint-Replay Counterfactual Verification
+  - Captures verification state at failure steps
+  - Splices in patches (instructions or tool arguments)
+  - Requires n≥3 passing replays to credit a patch (capped at 5 debug rounds)
+- `seds.phase_d.contract_auditor` - Tool call validation
+  - Input/output schema compliance
+  - State consistency checks
+  - Rate limiting (burst detection)
+- Structured Failure Taxonomy Classifier (tool_misuse, schema_violation, planning_loop, etc.)
+
+**Phase E - Synthesizer** (✓)
+- `seds.synthesizer` - Code-space mutation operator
+  - Mutation operators: prompt_edit, tool_edit, memory_edit, orchestration_edit, efficiency_edit
+  - Structured JSON schema for mutation requests
+  - Best-of-N sampling (~5) with preflight filtering
+  - Diversity guard (AST + prompt hash)
+
+**Phase F - Selector** (✓)
+- `seds.selector` - Self-improving agent factory
+  - Policy types: EPSILON, THOMPSON, EXP3, UCB
+  - Pareto frontier optimization (accuracy, cost/task, latency, reliability)
+  - Archive tree with lineage backpropagation
+  - Rollback ledger (git commits per node)
 
 ## Key Components
 
@@ -13,51 +53,8 @@ This project is in early stages with core domain contracts, broker routing, and 
 - `seds.domains.simple_qa` - Simple question answering example
 - `seds.domains.multi_hop_qa` - Multi-hop question answering example
 
-### Agent System
-- `agent_v0` - Domain-parametric ReAct/CoT seed agent (Phase A item 8)
-  - Reads `TaskDomain.goal` and `TaskDomain.tools` dynamically
-  - Safe arithmetic expression evaluation (`safe_eval_arithmetic`)
-  - Uses `seds.llm.deterministic()` for LLM calls via broker
-
-### Runtime Layer
-- `seds.runtime.llm` - LLM shim (calls broker via Unix socket)
-  - `deterministic()` - glm-4-7-flash tier
-  - `reasoner()` - gpt-5-nano tier
-
-### Broker
-- `seds.broker.server` - Unix socket server with tier routing
-  - Tier routing: deterministic→glm-4-7-flash, reasoner→gpt-5-nano
-  - Cache-based exit criterion: one real LLM call with cost > $0, then cached replay at $0
-
-### Executor
-- `seds.executor.runner` - DockerExecutor with security constraints
-  - 90s timeout per task
-  - 12x concurrent execution
-
-### Verification (Phase D)
-- `seds.phase_d.do_ver` - Checkpoint-Replay Counterfactual Verification
-  - Captures state at failure steps
-  - Splices in patches (instructions or tool arguments)
-  - Replays to verify fixes (n≥3 passing replays required)
-
-- `seds.phase_d.contract_auditor` - Tool call validation
-  - Input schema compliance
-  - Output schema compliance
-  - State consistency
-  - Rate limiting (burst detection)
-
 ### Report Generation
-- `seds.report.comparison_generator` - Generates comparison reports
-
-### Self-Improvement (Phases E-F)
-- `seds.synthesizer` - Code-space mutation operator (Phase E)
-  - Mutation operators: prompt_edit, tool_edit, memory_edit, orchestration_edit, efficiency_edit
-  - Structured JSON schema for mutation requests
-
-- `seds.selector` - Self-improving agent factory (Phase F)
-  - Policy types: EPSILON, THOMPSON, EXP3, UCB
-  - Pareto frontier optimization
-  - Node event tracking and performance evaluation
+- `seds.report.comparison_generator` - Generates comparison reports (Phase G)
 
 ## Quick Start
 
@@ -74,10 +71,258 @@ The smoke test in `agent_v0.py` demonstrates:
 2. Broker-managed LLM calls with cost tracking
 3. Exit criterion: one real call with nonzero cost, then cached replay at $0
 
-## Documentation
+## Setup
 
-See [docs/](./docs) for:
-- Implementation plan
-- User interaction plan
-- Progress tracking
-- neatlogs-doctor-output.md
+Run the bootstrap script:
+
+```bash
+./scripts/bootstrap.sh
+```
+
+This sets up the `.env` file with API keys and verifies that `TENSORMUX_BASE_URL` and `OPENAI_BASE_URL` are reachable.
+
+### Dependencies
+
+Required packages (install via pip):
+
+```bash
+pip install neatlogs opentelemetry-api opentelemetry-sdk
+```
+
+The broker uses Unix sockets (default: `seds_broker.sock`). No external dependencies required.
+
+### Running Agent V0
+
+Run the seed agent in sandbox mode (no external tools, offline diagnostics):
+
+```bash
+python agent_v0.py
+```
+
+Run integration tests:
+
+```bash
+# Minimal integration test
+python -m seds.executor.test_minimal_integration
+
+# Full integration test
+python -m seds.executor.test_runner_integration
+
+# Phase D verification demo
+python -m seds.phase_d.test
+```
+
+## User Interaction
+
+### Running a Self-Improvement Search
+
+To run the full SEDS architecture search, use the selector:
+
+```bash
+# Run selector with default parameters
+python -m seds.selector
+
+# Run with custom search duration
+python -m seds.selector --search-duration 3600
+```
+
+The selector manages the entire self-improvement loop:
+
+1. **Initialization**: Starts with `agent_v0` (or custom seed agent)
+2. **Synthesis Phase (E)**: Generates mutations of the seed agent
+3. **Evaluation Phase (B)**: Executes generated agents in Docker containers
+4. **Diagnostic Phase (D)**: Analyzes failures with counterfactual replay
+5. **Selection Phase (F)**: Chooses next agent for synthesis based on Pareto optimization
+
+### Viewing Progress
+
+Metrics and traces are logged with [neatlogs](https://neatlogs.ai):
+
+```bash
+# View logs in human-readable format
+python -m neatlogs doctor --local --probe --json
+
+# Generate report (Phase G)
+python -m seds.report.comparison_generator --out results/
+```
+
+### User-Controlled Mutation
+
+To explore manually without the selector:
+
+```bash
+# Run synthesizer demo
+python -m seds.synthesizer_demo
+```
+
+The synthesizer provides mutation operators you can inspect manually:
+
+- `prompt_edit`: Modify system prompt, exemplars, prohibition rules
+- `tool_edit`: Modify tool wrappers, schemas, validators
+- `memory_edit`: Modify scratchpad, trace retrieval
+- `orchestration_edit`: Modify verifier stage, self-consistency
+- `efficiency_edit`: Modify tier downgrade, operator fusion
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           Agent Architecture Search Loop                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Phase A: Substrate & Broker
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  agent_v0.py (seed agent)                                                    │
+│    ├─ Reads TaskDomain.goal and TaskDomain.tools dynamically                │
+│    ├─ ReAct/CoT reasoning                                                  │
+│    └─ seds.runtime.llm.call(tier) → seds.broker.server                     │
+│                                                                             │
+│  seds.broker.server (Unix socket)                                           │
+│    ├─ Tier routing: deterministic→glm-4-7-flash, reasoner→gpt-5-nano        │
+│    ├─ Cache management (exit criterion: real call + cached replay at $0)    │
+│    └─ Rate limiting, spend meter, replay cache                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Phase B: Executor
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  seds.executor.runner (DockerExecutor)                                      │
+│    ├─ Preflight gates: py_compile → ruff → import check → AST check        │
+│    ├─ 12x concurrent execution pool                                        │
+│    └─ 90s timeout per task                                                 │
+│                                                                             │
+│  seds.executor.tracedb (Trace DB schema)                                    │
+│    ├─ nodes, rollouts, spans, evaluations, llm_calls, tool_calls           │
+│    └─ Indexes: (node_id, task_id), (cache_key)                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Phase C: Evaluation & Statistics
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  seds.domains.base                                                          │
+│    ├─ TaskDomain, Task, Score, ToolSpec, RolloutResult contracts           │
+│    └─ Train/val task management                                             │
+│                                                                             │
+│  Paired comparison harness                                                  │
+│    ├─ Child vs. parent on same task subset                                │
+│    └─ Bootstrap/McNemar promotion gate (p<0.10)                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Phase D: Diagnostic
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  seds.phase_d.do_ver (Checkpoint-Replay Counterfactual Verification)        │
+│    ├─ Capture state at failure step t                                      │
+│    ├─ Splice in patch (instructions or tool arguments)                     │
+│    └─ Replay forward; requires n≥3 passing replays                        │
+│                                                                             │
+│  seds.phase_d.contract_auditor (Tool validation)                           │
+│    ├─ Input/output schema compliance                                        │
+│    ├─ State consistency                                                   │
+│    └─ Rate limiting (burst detection)                                      │
+│                                                                             │
+│  seds.phase_d.ssf (SSF folding)                                             │
+│    └─ Target ≥10× compression of traces (retain tb, diff hunks, errors)     │
+│                                                                             │
+│  Failure Taxonomy Classifier                                                 │
+│    └─ Fixed labels: tool_misuse, schema_violation, planning_loop, ...     │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Phase E: Synthesizer
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  seds.synthesizer (Code-space mutation operator)                            │
+│    ├─ Mutation operators: prompt_edit, tool_edit, memory_edit,             │
+│    │   orchestration_edit, efficiency_edit                                │
+│    ├─ Structured JSON schema for mutations                                 │
+│    ├─ Best-of-N sampling (~5) with preflight filtering                     │
+│    ├─ Diversity guard (AST + prompt hash)                                  │
+│    └─ Failure-mode histogram as primary signal (~200 tokens)               │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Phase F: Selector
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  seds.selector (Self-improving agent factory)                               │
+│    ├─ Policy types: EPSILON, THOMPSON, EXP3, UCB                           │
+│    ├─ Pareto frontier: accuracy, cost/task, latency, reliability          │
+│    ├─ Archive tree with HGM counters and lineage backprop                 │
+│    ├─ Cold-start fallback (UCB until min evaluations)                     │
+│    ├─ Outer-loop checkpointing (resume multi-hour searches)                │
+│    └─ Rollback ledger (git commits per node)                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+                              ────────► Loop ────────►
+
+Phase G: Evidence (Report Generation)
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  seds.report.comparison_generator                                          │
+│    ├─ v0 baseline vs. evolved on all four axes with CIs                     │
+│    ├─ Failure-mode histogram before/after                                  │
+│    ├─ Lineage tree                                                          │
+│    ├─ Cumulative cost curve                                                 │
+│    └─ Pareto plot                                                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Detailed Flow
+
+1. **Synthesis**: Selector generates N agent configurations (mutations of seed)
+2. **Evaluation**: Executor runs each agent on validation tasks (12x concurrent)
+3. **Tracing**: All LLM calls, tool calls, and errors written to trace DB
+4. **Diagnostic**: Failed agents analyzed with counterfactual replay
+5. **Selection**: Selector chooses next generation using Pareto optimization
+6. **Archive**: Every node becomes a git commit (rollback ledger)
+7. **Report**: Phase G generates final comparison report
+
+## Status & Limitations
+
+### Current Status (v0.1.0)
+
+All six phases implemented and functional:
+
+- **Phase A (Substrate & Broker)**: ✓ Working
+  - Domain-parametric agent v0 with calculator tool
+  - Unix socket broker with tier routing
+  - Cache-based exit criterion (proven working)
+
+- **Phase B (Executor)**: ✓ Working
+  - DockerExecutor with security constraints
+  - Preflight AST checks (kills ~20-30% bad mutations)
+
+- **Phase C (Evaluation & Statistics)**: ✓ Working
+  - Paired comparison harness
+  - Bootstrap/McNemar promotion gate
+
+- **Phase D (Diagnostic)**: ✓ Working
+  - Checkpoint-Replay Counterfactual Verification (n≥3 passing replays)
+  - Contract auditor (schema + rate limiting)
+  - Failure taxonomy classifier
+
+- **Phase E (Synthesizer)**: ✓ Working
+  - All 5 mutation operators (prompt_edit, tool_edit, memory_edit, orchestration_edit, efficiency_edit)
+  - Structured JSON schema mutations
+  - Best-of-N sampling with preflight filtering
+
+- **Phase F (Selector)**: ✓ Working
+  - EPSILON, THOMPSON, EXP3, UCB policies
+  - Pareto frontier optimization
+  - Archive tree with rollback ledger
+
+### Known Limitations
+
+1. **Data Privacy**: API keys stored in `.env` file; review before sharing
+2. **Cold Start**: First few generations may be inefficient (requires min 10 evaluations per clade)
+3. **Self-Improving Loop**: Currently iterates over synthetic mutations only; no manual intervention
+4. **Replay Cache Size**: Unlimited in-memory cache (may grow large; consider disk-based eviction)
+5. **Docker Dependency**: Requires Docker runtime for executor phase
+6. **Tier Availability**: Requires access to glm-4-7-flash and gpt-5-nano tiers via API
+
+### Documentation
+
+- IMPLEMENTATION_PLAN.md - Original design document (reference only)
+- USER_INTERACTION_PLAN.md - User interaction patterns (reference only)
+- neatlogs-doctor-output.md - NEAT logs diagnostic output
+
+### Roadmap (Future)
+
+- **Phase G**: Final report generation (partially implemented)
+- **v0.2.0**: Multi-domain unseen-domain demos
+- **v0.3.0**: Self-improving loop with manual intervention hooks
+- **v0.4.0**: Disk-based replay cache for large-scale searches
+- **v1.0.0**: Production-ready release with comprehensive testing
