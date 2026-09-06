@@ -332,10 +332,15 @@ class Broker:
         content = response.choices[0].message.content or ""
         reasoning = getattr(response.choices[0].message, "reasoning_content", "") or ""
 
+        raw_tool_calls = getattr(response.choices[0].message, "tool_calls", None) or []
+        tool_calls = [{"id": tc.id, "name": tc.function.name, "arguments": tc.function.arguments} for tc in raw_tool_calls]
+
         result = {
             "content": content,
             "reasoning": reasoning,
             "finish_reason": response.choices[0].finish_reason,
+            "tool_calls": tool_calls,
+            "raw_tool_calls": tool_calls,
         }
 
         return {

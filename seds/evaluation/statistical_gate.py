@@ -65,6 +65,17 @@ class PairedResult:
     def child_correct(self) -> bool:
         return self.child_score is not None and self.child_score.correct
 
+    @property
+    def improvement(self) -> Optional[float]:
+        """Return 1.0 if child improved over parent, -1.0 if declined, None if not comparable."""
+        if self.parent_correct is None or self.child_correct is None:
+            return None
+        if self.child_correct and not self.parent_correct:
+            return 1.0
+        if self.parent_correct and not self.child_correct:
+            return -1.0
+        return 0.0
+
 
 class PairedComparisonHarness:
     """
@@ -415,8 +426,8 @@ def promote_or_reject(
         test_result += f"p={p_value:.4f}"
 
     # Cost comparison (non-inferiority)
-    parent_cost = sum(s.detail['cost'] for s in parent_scores)
-    child_cost = sum(s.detail['cost'] for s in child_scores)
+    parent_cost = sum(s.detail.get('cost', 0.0) for s in parent_scores)
+    child_cost = sum(s.detail.get('cost', 0.0) for s in child_scores)
 
     if child_cost > parent_cost * 1.2:
         # Child is significantly more expensive (20% overhead)

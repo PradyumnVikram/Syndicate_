@@ -180,14 +180,15 @@ def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[st
             "role": "user",
             "content": (
                 f"Goal: {domain_goal}\n\n"
-                f"Available tools:\n"
-                f"{json.dumps(openai_tools, indent=2)}\n\n"
                 f"Task input: {json.dumps(task_input, indent=2)}\n\n"
                 f"Think step by step. Use tools when helpful. "
                 f"Provide a final answer at the end."
             ),
         },
     ]
+
+    # Initialize tool results collection
+    executed_tool_results = []
 
     traces.append({
         "step": 0,
@@ -221,6 +222,20 @@ def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[st
         except Exception:
             spans = []
         return f"Error: {response.get('error', 'unknown')}", traces, spans
+
+    structured_tool_calls = response["response"].get("tool_calls") or []
+    if structured_tool_calls:
+        extracted_calls = []
+        for tc in structured_tool_calls:
+            try:
+                tc_args = json.loads(tc["arguments"]) if isinstance(tc["arguments"], str) else tc["arguments"]
+            except json.JSONDecodeError:
+                tc_args = {}
+            extracted_calls.append((tc["name"], tc_args))
+    elif assistant_msg:
+        extracted_calls = parse_tool_calls(assistant_msg, domain_tools)
+    else:
+        extracted_calls = []
 
     assistant_msg = response["response"]["content"]
 
@@ -291,8 +306,22 @@ def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[st
         return tool_calls
 
     # Execute any extracted tool calls
-    if assistant_msg:
+    # FIX 2: structured-first logic for parsing tool calls
+    structured_tool_calls = response["response"].get("tool_calls") or []
+    if structured_tool_calls:
+        extracted_calls = []
+        for tc in structured_tool_calls:
+            try:
+                tc_args = json.loads(tc["arguments"]) if isinstance(tc["arguments"], str) else tc["arguments"]
+            except json.JSONDecodeError:
+                tc_args = {}
+            extracted_calls.append((tc["name"], tc_args))
+    elif assistant_msg:
         extracted_calls = parse_tool_calls(assistant_msg, domain_tools)
+    else:
+        extracted_calls = []
+
+    if True:
         for step_idx, (tool_name, args) in enumerate(extracted_calls):
             if tool_name not in tools_dict:
                 logger.warning(f"Unknown tool requested: {tool_name}")
@@ -319,6 +348,14 @@ def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[st
 
             result = execute_tool(tool_spec, args)
 
+            # FIX 4: Collect tool results for proper message building
+            executed_tool_results.append({
+                "id": structured_tool_calls[step_idx].get("id") or f"call_{step_idx}",
+                "name": tool_name,
+                "args": args,
+                "result": result
+            })
+
             # Record tool call to broker if rollout_id and broker are provided
             if rollout_id and node_id and task_id and broker:
                 try:
@@ -333,10 +370,6 @@ def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[st
                 except Exception:
                     # Fail silently - trace recording is optional
                     pass
-
-            # Append tool result as a user message for the next LLM call
-            assistant_msg = f"""Tool {tool_name} executed with result: {json.dumps(result, indent=2)}
-Now continue reasoning based on this result."""
 
             # Record tool call in trace
             traces.append({
@@ -354,10 +387,52 @@ Now continue reasoning based on this result."""
         """Final synthesis step."""
         pass
 
-    final_messages = messages + [{"role": "assistant", "content": assistant_msg}]
-    final_response = deterministic(
-        final_messages, tools=openai_tools, seed=seed + 2, socket_path=socket_path
-    )
+    # FIX 4: Build messages with tool_calls and tool results
+    if executed_tool_results:
+        # Build tool_calls in OpenAI format
+        openai_tool_calls = []
+        for tool_result in executed_tool_results:
+            openai_tool_calls.append({
+                "id": tool_result["id"],
+                "type": "function",
+                "function": {
+                    "name": tool_result["name"],
+                    "arguments": json.dumps(tool_result["args"])
+                }
+            })
+
+        # Build final messages with tool calls and tool results
+        messages_with_tools = messages + [
+            {
+                "role": "assistant",
+                "content": assistant_msg,
+                "tool_calls": openai_tool_calls
+            }
+        ]
+
+        # Add tool result messages
+        for tool_result in executed_tool_results:
+            messages_with_tools.append({
+                "role": "tool",
+                "tool_call_id": tool_result["id"],
+                "content": json.dumps(tool_result["result"])
+            })
+
+        # Add final user message to request final answer
+        messages_with_tools.append({
+            "role": "user",
+            "content": "Using the tool result above, state the final answer now. End with Final Answer: <value>."
+        })
+
+        final_response = deterministic(
+            messages_with_tools, tools=openai_tools, seed=seed + 2, socket_path=socket_path
+        )
+    else:
+        final_messages = messages + [{"role": "assistant", "content": assistant_msg}]
+        final_response = deterministic(
+            final_messages, tools=openai_tools, seed=seed + 2, socket_path=socket_path
+        )
+
     final_synthesis()
     traces.append({
         "step": len(traces) + 1,
@@ -373,6 +448,14 @@ Now continue reasoning based on this result."""
         content = final_response.get("response", {}).get("content")
         if content:
             answer = content
+
+    # FIX 4: Fallback to last tool result if answer has no digits
+    if executed_tool_results and not any(char.isdigit() for char in str(answer)):
+        last_result = executed_tool_results[-1]["result"]
+        if isinstance(last_result, dict) and "result" in last_result:
+            answer = str(last_result["result"])
+        else:
+            answer = str(last_result)
 
     # Extract neatlogs spans from the in-memory exporter
     try:
