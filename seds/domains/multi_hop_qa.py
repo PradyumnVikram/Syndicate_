@@ -4,9 +4,94 @@ This domain implements exact-match local QA with Multi-hop QA-style tasks
 (HotPotQA-style, 2-3 hop reasoning). Tasks are provided with reference answers.
 """
 
+import ast
 from typing import Any, Callable, List
 from dataclasses import replace
 from seds.domains.base import TaskDomain, Task, Score, ToolSpec
+
+
+def safe_eval_arithmetic(expr: str) -> float | None:
+    """Evaluate arithmetic expressions safely using a restricted AST.
+
+    Only allows:
+    - Numbers (int and float)
+    - Binary operators: +, -, *, /, //, %, **
+    - Unary operators: +, -
+    - Parentheses for grouping
+    - Whitespace as separator
+
+    Args:
+        expr: The arithmetic expression to evaluate
+
+    Returns:
+        The computed float result, or None if evaluation fails
+    """
+    expr = expr.strip()
+    if not expr:
+        return None
+
+    try:
+        tree = ast.parse(expr, mode='eval')
+
+        class Validator(ast.NodeVisitor):
+            def generic_visit(self, node):
+                # Only recurse into allowed node types
+                if isinstance(node, (ast.Expression, ast.BinOp, ast.UnaryOp,
+                                     ast.Num, ast.Constant, ast.Add, ast.Sub,
+                                     ast.Mult, ast.Div, ast.FloorDiv, ast.Mod,
+                                     ast.Pow, ast.USub, ast.UAdd)):
+                    super().generic_visit(node)
+                # For disallowed node types, don't recurse (this will raise ValueError later)
+
+        validator = Validator()
+        validator.visit(tree)
+
+        def eval_node(node):
+            if isinstance(node, ast.Expression):
+                return eval_node(node.body)
+            elif isinstance(node, ast.BinOp):
+                left = eval_node(node.left)
+                right = eval_node(node.right)
+                if isinstance(node.op, ast.Add):
+                    return left + right
+                elif isinstance(node.op, ast.Sub):
+                    return left - right
+                elif isinstance(node.op, ast.Mult):
+                    return left * right
+                elif isinstance(node.op, ast.Div):
+                    return left / right
+                elif isinstance(node.op, ast.FloorDiv):
+                    return left // right
+                elif isinstance(node.op, ast.Mod):
+                    return left % right
+                elif isinstance(node.op, ast.Pow):
+                    return left ** right
+                else:
+                    raise ValueError(f"Unsupported binary operator: {type(node.op).__name__}")
+            elif isinstance(node, ast.UnaryOp):
+                operand = eval_node(node.operand)
+                if isinstance(node.op, ast.UAdd):
+                    return +operand
+                elif isinstance(node.op, ast.USub):
+                    return -operand
+                else:
+                    raise ValueError(f"Unsupported unary operator: {type(node.op).__name__}")
+            elif isinstance(node, ast.Num):
+                return node.n
+            elif isinstance(node, ast.Constant):
+                if isinstance(node.value, (int, float)):
+                    return node.value
+                raise ValueError("Only numeric constants allowed")
+            else:
+                raise ValueError(f"Unsupported node type in value: {type(node).__name__}")
+
+        result = eval_node(tree)
+        if isinstance(result, (int, float)):
+            return float(result)
+        return None
+
+    except Exception:
+        return None
 
 
 # Define tool specifications for multi-hop QA
@@ -37,7 +122,7 @@ MULTIHOP_TOOLS = [
             "required": ["expression"],
         },
         impl=lambda expression: {
-            "result": eval(expression)  # In production, use safer evaluation
+            "result": safe_eval_arithmetic(expression)
         }
     ),
 ]
@@ -134,8 +219,8 @@ class MultiHopQA_Domain(TaskDomain):
         Returns:
             Score with correct flag, partial score, and detailed breakdown
         """
-        # Host-side evaluation - exact match check
-        exact_match = str(host_output_reference).strip().lower() == str(task.inputs.get("question", "")).strip().lower()
+        # Host-side evaluation - exact match check against ground truth reference
+        exact_match = str(host_output_reference).strip().lower() == str(task.reference).strip().lower()
 
         # Extract reasoning hops
         hop1 = task.inputs.get("hop1_query", "")

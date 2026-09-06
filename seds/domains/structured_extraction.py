@@ -144,8 +144,7 @@ class StructuredExtract_Domain(TaskDomain):
         valid_task_type = task_type in valid_types
 
         # Check for success indicators
-        success_indicators = ["completed", "done", "true", "success"]
-        exact_match = output_ref in success_indicators or output_ref == task_type
+        exact_match = output_ref == str(task.reference).strip()
 
         partial = 1.0 if valid_task_type and exact_match else 0.0
 

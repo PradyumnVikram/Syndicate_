@@ -158,8 +158,7 @@ class CodeTransform_Domain(TaskDomain):
         recognized = operation in recognized_ops
 
         # Check if reference indicates success
-        success_indicators = ["completed", "valid", "applied", "done", "true"]
-        exact_match = output_ref in success_indicators or output_ref == operation.lower()
+        exact_match = output_ref == str(task.reference).strip()
 
         # Partial score based on operation recognition
         partial = 1.0 if recognized and exact_match else 0.0
