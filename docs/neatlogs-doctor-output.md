@@ -1,0 +1,198 @@
+Neatlogs Doctor: PASS
+[PASS] LOCAL_ENVELOPE_VALID: The final normalized local envelope is valid
+{
+  "capture": {
+    "root_span_id": "8247255d3803646d",
+    "semantic_digest": "sha256:7163d2de42c4165f3ae552279fdde2ec0839413ce608c6e5d71f3fb532df319b",
+    "span_count": 4,
+    "trace_id": "3cbd5c95e0f7c3eddb0bbde09fc7d986"
+  },
+  "checks": [
+    {
+      "message": "The final normalized local envelope is valid",
+      "name": "local_envelope",
+      "reason_code": "LOCAL_ENVELOPE_VALID",
+      "remediation_code": "NONE",
+      "status": "pass"
+    }
+  ],
+  "first_failure": null,
+  "flush": {
+    "duration_ms": 4,
+    "outcome": "success",
+    "timeout_ms": 5000
+  },
+  "format_version": "neatlogs.doctor/v2",
+  "mode": "local",
+  "ownership": {
+    "instrumentor_count": 0,
+    "provider": "private"
+  },
+  "queue": {
+    "capacity": 2048,
+    "dropped_spans": 0,
+    "mode": "diagnostic_capture",
+    "pending_spans": 0
+  },
+  "retry": {
+    "attempts": 0,
+    "exhausted": false,
+    "window_ms": 0
+  },
+  "runtime": {
+    "language": "python",
+    "schema_version": "2",
+    "sdk_version": "1.4.21",
+    "transport": "otlp_http_protobuf"
+  },
+  "sampling": {
+    "effective_sampler": "parentbased_traceidratio",
+    "root_sample_rate": 1.0,
+    "sampled": true
+  },
+  "status": "pass"
+}
+{
+  "checks": [
+    {
+      "message": "Configure an ingestion credential to run a backend probe",
+      "name": "credentials",
+      "reason_code": "CREDENTIAL_MISSING",
+      "remediation_code": "SET_CREDENTIAL",
+      "status": "fail"
+    }
+  ],
+  "first_failure": "CREDENTIAL_MISSING",
+  "format_version": "neatlogs.doctor/v2",
+  "mode": "probe",
+  "runtime": {
+    "language": "python",
+    "schema_version": "2",
+    "sdk_version": "1.4.21",
+    "transport": "otlp_http_protobuf"
+  },
+  "status": "fail"
+}
+{
+  "capture": {
+    "root_span_id": "026061ef9bd3f19a",
+    "semantic_digest": "sha256:7163d2de42c4165f3ae552279fdde2ec0839413ce608c6e5d71f3fb532df319b",
+    "span_count": 4,
+    "trace_id": "42392e43045688ba2c796ff28a4c65bf"
+  },
+  "checks": [
+    {
+      "message": "The final normalized local envelope is valid",
+      "name": "local_envelope",
+      "reason_code": "LOCAL_ENVELOPE_VALID",
+      "remediation_code": "NONE",
+      "status": "pass"
+    },
+    {
+      "message": "The exact Doctor trace is visible through the authenticated trace API",
+      "name": "probe_visibility",
+      "reason_code": "TRACE_VISIBLE",
+      "remediation_code": "NONE",
+      "status": "pass"
+    },
+    {
+      "details": {
+        "current_stage": "finalized",
+        "ingestion_state": "succeeded",
+        "last_successful_stage": "finalized",
+        "retryable": false
+      },
+      "message": "The exact Doctor trace reached a terminal materialized state",
+      "name": "probe_finalization",
+      "reason_code": "TRACE_FINALIZED",
+      "remediation_code": "NONE",
+      "status": "pass"
+    },
+    {
+      "message": "The persisted Doctor hierarchy has one root and valid parents",
+      "name": "probe_hierarchy",
+      "reason_code": "HIERARCHY_VALID",
+      "remediation_code": "NONE",
+      "status": "pass"
+    },
+    {
+      "message": "The persisted Doctor span names and types are complete",
+      "name": "probe_attributes",
+      "reason_code": "ATTRIBUTES_VALID",
+      "remediation_code": "NONE",
+      "status": "pass"
+    },
+    {
+      "message": "The persisted Doctor spans retain input and output",
+      "name": "probe_input_output",
+      "reason_code": "INPUT_OUTPUT_VALID",
+      "remediation_code": "NONE",
+      "status": "pass"
+    },
+    {
+      "message": "The versioned Doctor SDK metadata survived finalization",
+      "name": "probe_metadata",
+      "reason_code": "METADATA_VALID",
+      "remediation_code": "NONE",
+      "status": "pass"
+    },
+    {
+      "message": "Persisted token totals remain numeric",
+      "name": "probe_typed_tokens",
+      "reason_code": "TYPED_TOKENS_VALID",
+      "remediation_code": "NONE",
+      "status": "pass"
+    }
+  ],
+  "first_failure": null,
+  "flush": {
+    "duration_ms": 1094,
+    "outcome": "success",
+    "timeout_ms": 5000
+  },
+  "format_version": "neatlogs.doctor/v2",
+  "mode": "probe",
+  "ownership": {
+    "instrumentor_count": 0,
+    "provider": "private"
+  },
+  "probe": {
+    "attributes_valid": true,
+    "duplicate_span_count": 0,
+    "finalized": true,
+    "hierarchy_valid": true,
+    "ingest_route": "/v1/traces",
+    "input_output_valid": true,
+    "marker_header": "x-neatlogs-doctor",
+    "marker_version": "v1",
+    "meaningful_root_count": 1,
+    "metadata_valid": true,
+    "readback_span_count": 4,
+    "readback_trace_id": "42392e43045688ba2c796ff28a4c65bf",
+    "typed_tokens_valid": true,
+    "visible": true
+  },
+  "queue": {
+    "capacity": 2048,
+    "dropped_spans": 0,
+    "mode": "diagnostic_capture",
+    "pending_spans": 0
+  },
+  "retry": {
+    "attempts": 0,
+    "exhausted": false,
+    "window_ms": 0
+  },
+  "runtime": {
+    "language": "python",
+    "schema_version": "2",
+    "sdk_version": "1.4.21",
+    "transport": "otlp_http_protobuf"
+  },
+  "sampling": {
+    "effective_sampler": "parentbased_traceidratio",
+    "root_sample_rate": 1.0,
+    "sampled": true
+  },
+  "status": "pass"
+}
