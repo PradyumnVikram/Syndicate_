@@ -59,8 +59,8 @@ class MutationResult:
 # Import broker and domain contracts
 # seds must be on the Python path for broker imports to work
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from seds.broker.server import Broker
-from seds.domains.base import AgentSystem, RolloutResult, Score
+from broker.server import Broker
+from domains.base import AgentSystem, RolloutResult, Score
 
 
 # ── AST Hash for Diversity Guard ─────────────────────────────────────────────

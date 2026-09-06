@@ -7,7 +7,7 @@ This domain implements exact-match local QA with Multi-hop QA-style tasks
 import ast
 from typing import Any, Callable, List
 from dataclasses import replace
-from seds.domains.base import TaskDomain, Task, Score, ToolSpec
+from domains.base import TaskDomain, Task, Score, ToolSpec
 
 
 def safe_eval_arithmetic(expr: str) -> float | None:

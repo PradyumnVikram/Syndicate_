@@ -6,7 +6,7 @@ It serves as a minimal example domain that can be instantiated without any frame
 
 from typing import Any, Callable, List
 from dataclasses import replace
-from seds.domains.base import TaskDomain, Task, Score, ToolSpec
+from domains.base import TaskDomain, Task, Score, ToolSpec
 
 # Simple set of tools for the domain
 SIMPLETOOLS = [

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import unittest
 
-from seds.phase_d.do_ver import (
+from phase_d.do_ver import (
     DoVerCheckpointReplay,
     MockReplayCache,
     MockToolCallRecorder,
@@ -22,7 +22,7 @@ from seds.phase_d.do_ver import (
     VerificationState,
 )
 
-from seds.phase_d.failure_taxonomy import (
+from phase_d.failure_taxonomy import (
     Failure,
     FailureCategory,
     FailureSeverity,

@@ -17,12 +17,12 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from seds.phase_d.do_ver import (
+from phase_d.do_ver import (
     DomainViolation,
     DomainVerifier,
     ValidationResult,
 )
-from seds.phase_d.failure_taxonomy import (
+from phase_d.failure_taxonomy import (
     Failure,
     FailureCategory,
     FailureSeverity,
@@ -163,7 +163,7 @@ def demo_simple_failure_detection():
     print("DEMO: Failure Detection (Simplified)")
     print("="*80)
 
-    from seds.phase_d import failure_taxonomy
+    from phase_d import failure_taxonomy
 
     # Create a simple task execution with failures
     failures = [

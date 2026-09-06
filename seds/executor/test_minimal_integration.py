@@ -39,10 +39,10 @@ async def test_imports():
 
     try:
         # Test import of executor modules
-        from seds.domains.base import Task, RolloutResult, Score, AgentSystem
-        from seds.executor.runner import DockerExecutor
-        from seds.executor.preflight import check_agent_code
-        from seds.executor.tracedb import get_connection
+        from domains.base import Task, RolloutResult, Score, AgentSystem
+        from executor.runner import DockerExecutor
+        from executor.preflight import check_agent_code
+        from executor.tracedb import get_connection
 
         logger.info("✓ All imports successful")
 
@@ -145,8 +145,8 @@ async def test_docker_executor_creation():
     logger.info("=" * 80)
 
     try:
-        from seds.domains.base import Task
-        from seds.executor.runner import DockerExecutor
+        from domains.base import Task
+        from executor.runner import DockerExecutor
 
         # Test default configuration
         executor_default = DockerExecutor(broker_socket_path="/broker/socket")
@@ -228,8 +228,8 @@ async def test_security_constraints():
     logger.info("=" * 80)
 
     try:
-        from seds.executor.runner import DockerExecutor
-        from seds.domains.base import Task
+        from executor.runner import DockerExecutor
+        from domains.base import Task
 
         executor = DockerExecutor(broker_socket_path="/broker/socket")
 

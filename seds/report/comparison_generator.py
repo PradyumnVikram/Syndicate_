@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
 
-from seds.domains.base import Score
+from domains.base import Score
 
 
 class ComparisonReportGenerator:

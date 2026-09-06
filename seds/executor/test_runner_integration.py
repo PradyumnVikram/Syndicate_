@@ -11,8 +11,8 @@ import logging
 import sys
 from pathlib import Path
 
-from seds.domains.base import Task, Score, AgentSystem
-from seds.executor.runner import DockerExecutor
+from domains.base import Task, Score, AgentSystem
+from executor.runner import DockerExecutor
 
 
 def setup_logging():

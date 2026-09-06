@@ -2,7 +2,8 @@
 
 import random
 from typing import Any, Dict, List, Optional, Tuple
-from seds.domains.base import TaskDomain, Task, Score
+
+from domains.base import TaskDomain, Task, Score
 
 
 class EvaluationHarness:

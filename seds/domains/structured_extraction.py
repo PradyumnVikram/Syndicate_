@@ -6,7 +6,7 @@ with schema-strict validation.
 
 from typing import Any, Callable, List
 from dataclasses import replace
-from seds.domains.base import TaskDomain, Task, Score, ToolSpec
+from domains.base import TaskDomain, Task, Score, ToolSpec
 
 
 # Define tool specifications for structured extraction
