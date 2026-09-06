@@ -60,6 +60,9 @@ from seds.phase_d.do_ver import DoVerCheckpointReplay
 # Import Selector components
 from seds.selector import PolicyType
 
+# Import Promotion Gate (PR #13)
+from seds.evaluation import promote_or_reject
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -393,6 +396,7 @@ def main():
     baseline_val_tasks = domain.val_tasks[:args.evals_per_node]
     baseline_total_score = 0.0
     baseline_correct = 0
+    baseline_scores = []  # Collect all scores for promotion gate
 
     for task in baseline_val_tasks:
         domain_goal = domain.goal
@@ -411,6 +415,7 @@ def main():
         score = domain.evaluate(task, answer)
         baseline_total_score += score.partial
         baseline_correct += 1 if score.correct else 0
+        baseline_scores.append(score)  # Collect score for promotion gate
 
     baseline_accuracy = baseline_correct / len(baseline_val_tasks)
     baseline_avg_reward = baseline_total_score / len(baseline_val_tasks)
