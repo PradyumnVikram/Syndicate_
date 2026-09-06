@@ -195,6 +195,7 @@ class ReplayCache:
         conn2.close()
 
         return {
+            "ok": True,  # Cache hit is always successful
             "cache_key": key,
             "cached": True,
             "resolved_model": resolved_model,
@@ -203,7 +204,7 @@ class ReplayCache:
             "output_tokens": row[2],
             "reasoning_tokens": row[3],
             "cached_tokens": row[4],
-            "cost_usd": row[5],
+            "cost_usd": 0.0,  # Cached calls cost $0 (replay only)
         }
 
     def store(self, resolved_model: str, messages: list, tools: list,

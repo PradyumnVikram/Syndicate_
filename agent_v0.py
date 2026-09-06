@@ -14,6 +14,11 @@ import re
 import time
 from typing import Any
 
+from dotenv import load_dotenv
+
+# Load environment variables with override=True to pick up real TensorMux key
+load_dotenv(".env", override=True)
+
 from neatlogs import span as neatlogs_span
 from neatlogs import init as neatlogs_init
 from neatlogs import InMemoryDiagnosticSpanExporter
@@ -493,8 +498,11 @@ if __name__ == "__main__":
         'seed': 42,  # First call
         'max_tokens': 500,
     })
-    print(f"  Real call: ok={result_real.get('ok')}, cached={result_real.get('cached')}, "
-          f"cost=${result_real.get('cost_usd'):.8f}, model={result_real.get('resolved_model')}")
+    if result_real is None:
+        print(f"  Real call: ERROR - result is None (API call failed)")
+    else:
+        print(f"  Real call: ok={result_real.get('ok')}, cached={result_real.get('cached')}, "
+              f"cost=${result_real.get('cost_usd'):.8f}, model={result_real.get('resolved_model')}")
 
     print("\n=== Exit Criterion: Cached replay ===")
     result_cached = broker.handle_call({
@@ -509,8 +517,11 @@ if __name__ == "__main__":
         'seed': 42,
         'max_tokens': 500,
     })
-    print(f"  Cached call: ok={result_cached.get('ok')}, cached={result_cached.get('cached')}, "
-          f"cost=${result_cached.get('cost_usd'):.8f}, model={result_cached.get('resolved_model')}")
+    if result_cached is None:
+        print(f"  Cached call: ERROR - result is None (API call failed)")
+    else:
+        print(f"  Cached call: ok={result_cached.get('ok')}, cached={result_cached.get('cached')}, "
+              f"cost=${result_cached.get('cost_usd'):.8f}, model={result_cached.get('resolved_model')}")
 
     # Verify exit criterion (these will fail if API returns error or $0 cost)
     if result_real is None:
