@@ -148,6 +148,11 @@ class CodeTransform_Domain(TaskDomain):
 
         Returns:
             Score with correct flag, partial score, and detailed breakdown
+
+        Note:
+            partial always equals correct (1.0 iff exact_match, 0.0 otherwise).
+            This makes partial redundant but ensures consistent semantics across domains
+            for Pareto frontier comparison.
         """
         # Host-side evaluation - check if task was marked as completed
         output_ref = str(host_output_reference).strip().lower()
@@ -160,8 +165,8 @@ class CodeTransform_Domain(TaskDomain):
         # Check if reference indicates success
         exact_match = output_ref == str(task.reference).strip()
 
-        # Partial score based on operation recognition
-        partial = 1.0 if recognized and exact_match else 0.0
+        # Partial score based on correctness (partial == correct)
+        partial = 1.0 if exact_match else 0.0
 
         detail = {
             "failure_category": "failure" if not (recognized and exact_match) else "success",

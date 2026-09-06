@@ -218,6 +218,11 @@ class MultiHopQA_Domain(TaskDomain):
 
         Returns:
             Score with correct flag, partial score, and detailed breakdown
+
+        Note:
+            partial always equals correct (1.0 iff exact_match, 0.0 otherwise).
+            This makes partial redundant but ensures consistent semantics across domains
+            for Pareto frontier comparison.
         """
         # Host-side evaluation - exact match check against ground truth reference
         exact_match = str(host_output_reference).strip().lower() == str(task.reference).strip().lower()
@@ -226,8 +231,8 @@ class MultiHopQA_Domain(TaskDomain):
         hop1 = task.inputs.get("hop1_query", "")
         hop2 = task.inputs.get("hop2_query", "")
 
-        # Calculate partial score based on hop completeness
-        partial = 1.0 if hop1 and hop2 else 0.0
+        # Calculate partial score based on correctness (partial == correct)
+        partial = 1.0 if exact_match else 0.0
 
         # Detailed breakdown
         detail = {

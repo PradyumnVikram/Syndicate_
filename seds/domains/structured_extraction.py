@@ -134,6 +134,11 @@ class StructuredExtract_Domain(TaskDomain):
 
         Returns:
             Score with correct flag, partial score, and detailed breakdown
+
+        Note:
+            partial always equals correct (1.0 iff exact_match, 0.0 otherwise).
+            This makes partial redundant but ensures consistent semantics across domains
+            for Pareto frontier comparison.
         """
         # Host-side evaluation
         output_ref = str(host_output_reference).strip()
@@ -146,7 +151,8 @@ class StructuredExtract_Domain(TaskDomain):
         # Check for success indicators
         exact_match = output_ref == str(task.reference).strip()
 
-        partial = 1.0 if valid_task_type and exact_match else 0.0
+        # Partial score based on correctness (partial == correct)
+        partial = 1.0 if exact_match else 0.0
 
         detail = {
             "failure_category": "failure" if not (valid_task_type and exact_match) else "success",
