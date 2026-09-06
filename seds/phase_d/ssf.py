@@ -32,6 +32,31 @@ FAILURE_KEYWORD_PATTERNS = [
     r'\bvalidation\s+error\b', # "validation error" (context)
     r'\binvalid\s+value\b',   # "invalid value" (context)
     r'\bstack\s+trace\b',     # "stack trace" (context)
+    # Individual error types and keywords (catch unstructured error messages)
+    r'\bTypeError\b',         # Python type error
+    r'\bAssertionError\b',   # Assertion failure
+    r'\bModuleNotFoundError\b', # Module not found
+    r'\bValueError\b',        # Value error
+    r'\bKeyError\b',          # Key error
+    r'\bAttributeError\b',    # Attribute error
+    r'\bMemoryError\b',       # Memory error
+    r'\bIOError\b',           # I/O error
+    r'\bOSError\b',           # OS error
+    r'\bPermissionError\b',   # Permission denied
+    r'\bFileNotFoundError\b', # File not found
+    r'\bRuntimeError\b',      # Runtime error
+    r'\bSyntaxError\b',       # Syntax error
+    r'\bIndentationError\b',  # Indentation error
+    r'\bNameError\b',         # Name error
+    r'\bZeroDivisionError\b', # Division by zero
+    r'\bStopIteration\b',     # Stop iteration
+    r'\bException\b',         # Generic exception
+    r'\bTraceback',           # Traceback marker (line starts with)
+    r'\bError\b',             # Generic error (when in error context)
+    r'\bWarning\b',           # Warning
+    r'\bFailed\b',            # Failed
+    r'\bException\s+raised\b', # Exception raised
+    r'\bTraceback\s+\(most\s+recent\s+call\s+last\)', # Full traceback header
 ]
 
 
@@ -114,6 +139,25 @@ class SemanticSaliencyFolder:
             span_text = json.dumps(content, default=str)
         else:
             span_text = str(content)
+
+        # Also extract error and traceback from top-level span fields (primary for failures)
+        # This is critical because real agent failures store errors under span["error"]/["traceback"]
+        # not in outputs.content
+        error = span.get("error")
+        traceback = span.get("traceback")
+
+        # Concatenate error/traceback to span text if present
+        if error:
+            if span_text:
+                span_text = span_text + "\n\n[ERROR]\n" + str(error)
+            else:
+                span_text = str(error)
+
+        if traceback:
+            if span_text:
+                span_text = span_text + "\n\n[TRACEBACK]\n" + str(traceback)
+            else:
+                span_text = str(traceback)
 
         # Check if this span contains diagnostic content
         if self._is_diagnostic_content(span_text):
