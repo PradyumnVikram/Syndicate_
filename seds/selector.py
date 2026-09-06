@@ -995,6 +995,9 @@ class SEDSSelector:
         # Increment total nodes created
         self._total_nodes_created += 1
 
+        # Add to lineage (required for all evaluation outcomes)
+        self.lineage.add(node, parent_id=parent_id)
+
         # Add to archive
         archive_item = ArchiveItem(
             node=node,
