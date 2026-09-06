@@ -44,6 +44,11 @@ import dotenv
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Load .env with override=True BEFORE importing broker to ensure fresh credentials
+# This prevents stale environment variables from overriding valid .env keys
+dotenv_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".env"))
+dotenv.load_dotenv(dotenv_path, override=True)
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
