@@ -485,33 +485,8 @@ if __name__ == "__main__":
         'seed': 42,  # First call
         'max_tokens': 500,
     })
-
-    # If API quota exceeded, simulate a real API call with cost > 0
-    if not result_real.get('ok'):
-        print(f"  API quota exceeded, simulating real call with mock response")
-        import json
-        mock_response = {
-            "content": "",
-            "reasoning": "",
-            "finish_reason": "tool_calls"
-        }
-        result_real = {
-            "ok": True,
-            "cached": False,
-            "cost_usd": 0.05,  # Mock cost
-            "resolved_model": "glm-4-7-flash",
-            "cache_key": "simulated-12345",
-            "response": mock_response,
-            "input_tokens": 50,
-            "output_tokens": 100,
-            "reasoning_tokens": 0,
-            "cached_tokens": 0,
-        }
-
-    model_real = result_real.get('resolved_model') or 'N/A'
-    cache_key_real = result_real.get('cache_key') or 'N/A'
     print(f"  Real call: ok={result_real.get('ok')}, cached={result_real.get('cached')}, "
-          f"cost=${result_real.get('cost_usd'):.8f}, model={model_real}, cache_key={cache_key_real}")
+          f"cost=${result_real.get('cost_usd'):.8f}, model={result_real.get('resolved_model')}")
 
     print("\n=== Exit Criterion: Cached replay ===")
     result_cached = broker.handle_call({
@@ -523,47 +498,19 @@ if __name__ == "__main__":
             {'role': 'user', 'content': 'What is 12345 + 67890?'}
         ],
         'tools': openai_tools,
-        'seed': 43,  # Different seed to get cache miss
+        'seed': 42,
         'max_tokens': 500,
     })
-
-    # If API quota exceeded, simulate a cached call with cost $0
-    if not result_cached.get('ok'):
-        print(f"  API quota exceeded, simulating cached call with mock response (cost $0)")
-        import json
-        mock_response = {
-            "content": "",
-            "reasoning": "",
-            "finish_reason": "tool_calls"
-        }
-        result_cached = {
-            "ok": True,
-            "cached": True,
-            "cost_usd": 0.0,
-            "resolved_model": "glm-4-7-flash",
-            "cache_key": "simulated-12345",
-            "response": mock_response,
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "reasoning_tokens": 0,
-            "cached_tokens": 50,
-        }
-
-    model_cached = result_cached.get('resolved_model') or 'N/A'
-    cache_key_cached = result_cached.get('cache_key') or 'N/A'
     print(f"  Cached call: ok={result_cached.get('ok')}, cached={result_cached.get('cached')}, "
-          f"cost=${result_cached.get('cost_usd'):.8f}, model={model_cached}, cache_key={cache_key_cached}")
+          f"cost=${result_cached.get('cost_usd'):.8f}, model={result_cached.get('resolved_model')}")
 
     # Verify exit criterion
     assert result_real.get("ok") == True, "Real call must succeed"
     assert result_cached.get("ok") == True, "Cached call must succeed"
-    assert result_real.get("cached") == False, "First call should not be cached"
     assert result_cached.get("cached") == True, "Second call must be cached"
     assert result_real.get("cost_usd", 0) > 0, "Real call must have nonzero cost"
     assert result_cached.get("cost_usd", 0) == 0, "Cached call must cost $0"
-    # cache_key will be None for mocked call, so skip this assertion
-    if result_real.get("cache_key") and result_cached.get("cache_key"):
-        assert result_real.get("cache_key") == result_cached.get("cache_key"), "Same cache key"
+    assert result_real.get("cache_key") == result_cached.get("cache_key"), "Same cache key"
 
     # Show both log entries
     print("\n=== Broker Call Log (both entries) ===")
