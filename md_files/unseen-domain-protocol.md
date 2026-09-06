@@ -111,20 +111,34 @@ class MyNewDomain(TaskDomain):
                 },
                 reference="expected_output",  # Ground truth reference
             ),
-            # Add more tasks as needed
+            Task(
+                task_id="my_new_002",
+                inputs={
+                    "param1": "value2",
+                },
+                reference="expected_output_2",
+            ),
         ]
 
     def _create_validation_tasks(self) -> List[Task]:
         """Create the frozen validation task set."""
+        # ⚠️ CRITICAL: Validation tasks must have different task_ids than training tasks.
+        # Reusing task_ids would cause train/val leakage (see section 4 of USER_INTERACTION_PLAN.md).
         return [
             Task(
-                task_id="my_new_001",
+                task_id="my_new_003",
                 inputs={
-                    "param1": "value1",
+                    "param1": "value3",
                 },
-                reference="expected_output",
+                reference="expected_output_3",
             ),
-            # Add more tasks as needed
+            Task(
+                task_id="my_new_004",
+                inputs={
+                    "param1": "value4",
+                },
+                reference="expected_output_4",
+            ),
         ]
 
     # --- STEP 4: Implement evaluate() ---
@@ -250,15 +264,17 @@ class SimpleQA_Domain(TaskDomain):
         ]
 
     def _create_validation_tasks(self) -> List[Task]:
+        # Validation tasks use different task_ids (003, 004) than training tasks (001, 002).
+        # This prevents train/val leakage and ensures a frozen held-out set.
         return [
             Task(
-                task_id="simple_qa_001",
-                inputs={"question": "Is water wet?"},
+                task_id="simple_qa_003",
+                inputs={"question": "Is the sky blue?"},
                 reference="yes",
             ),
             Task(
-                task_id="simple_qa_002",
-                inputs={"question": "Is fire cold?"},
+                task_id="simple_qa_004",
+                inputs={"question": "Is the ground hot?"},
                 reference="no",
             ),
         ]
@@ -323,6 +339,7 @@ When adding a new domain, verify:
 - [ ] `evaluate()` compares against `task.reference` (NOT `task.inputs`)
 - [ ] `_create_training_tasks()` returns `List[Task]`
 - [ ] `_create_validation_tasks()` returns `List[Task]`
+- [ ] **train_tasks and val_tasks have disjoint task_ids** (no overlap, e.g., `set(t.task_id for t in train_tasks).isdisjoint(set(v.task_id for v in val_tasks)) is True`)
 
 ---
 
