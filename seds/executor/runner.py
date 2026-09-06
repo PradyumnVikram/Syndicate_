@@ -84,6 +84,7 @@ class DockerExecutor:
         try:
             # Verify broker socket exists and is accessible
             result = client.containers.run(
+                image="busybox:latest",
                 name="seds-broker",
                 command=["sh", "-c", "ls -la " + self.broker_socket_path + " && chmod 644 " + self.broker_socket_path],
                 network_mode="none",
@@ -128,10 +129,9 @@ class DockerExecutor:
         # User configuration (non-root)
         args.extend([
             "--user", f"{USER_UID}:{USER_GID}",
-            "--volume", f"{USER_UID}:{USER_UID}",
         ])
 
-        # Tmpfs for /tmp and /work
+        # Tmpfs for /tmp and /work with security constraints
         args.extend([
             "--tmpfs", "/tmp:rw,noexec,nosuid",
             "--tmpfs", f"{WORK_DIR}:rw,noexec,nosuid",
@@ -141,9 +141,6 @@ class DockerExecutor:
         args.extend([
             "--volume", f"{self.broker_socket_path}:/broker/socket:ro",
         ])
-
-        # Timeout
-        args.extend(["--timeout", "90"])
 
         # Container name
         args.append(f"--name={task.task_id}")
@@ -168,13 +165,13 @@ class DockerExecutor:
 
     def _generate_task_script(self, task: Task) -> str:
         """Generate a container-executable task script."""
-        return f"""#!/bin/bash
-set -euo pipefail
+        inputs_json = json.dumps(task.inputs, separators=(',', ':'), ensure_ascii=False)
+        return f'''set -euo pipefail
 # Task environment variables
 export TASK_ID="{task.task_id}"
-export TASK_INPUTS={json.dumps(task.inputs, indent=2)}
+export TASK_INPUTS={inputs_json}
 echo "Running task: {task.task_id}"
-echo "Inputs: {json.dumps(task.inputs)}"
+echo "Inputs: {inputs_json}"
 # Create work directory
 mkdir -p {WORK_DIR}
 cd {WORK_DIR}
@@ -182,7 +179,7 @@ cd {WORK_DIR}
 # For now, just echo success
 echo "Task {task.task_id} started"
 exit 0
-"""
+'''
 
     async def _check_preflight(self, task: Task) -> tuple[bool, List[str]]:
         """Run preflight AST check on the task."""
@@ -269,7 +266,12 @@ exit 0
             exit_status = container.wait(timeout=90)
 
             # Capture logs
-            logs = container.logs(stdout=True, stderr=True, tail=100).decode("utf-8")
+            try:
+                logs = container.logs(stdout=True, stderr=True, tail=100).decode("utf-8")
+                logger.debug(f"Captured container logs ({len(logs)} bytes)")
+            except Exception as e:
+                logger.warning(f"Failed to capture container logs: {e}")
+                logs = ""
             success = exit_status["StatusCode"] == 0
 
             result = RolloutResult(
@@ -301,18 +303,27 @@ exit 0
                 f"success={success}, duration={result.wall_ms}ms"
             )
 
+            # Remove the container
+            try:
+                client = docker.from_env()
+                container = client.containers.get(container_id)
+                container.remove()
+                logger.debug(f"Removed container {container_id}")
+            except DockerException:
+                logger.warning(f"Failed to remove container {container_id}")
+
             return result
 
         except subprocess.TimeoutExpired:
             logger.error(f"Task {task.task_id} timed out after 90s")
 
-            # Kill the container
+            # Remove the container
             if container_id:
                 try:
                     client = docker.from_env()
                     container = client.containers.get(container_id)
-                    container.kill()
-                    logger.info(f"Killed timed-out container {container_id}")
+                    container.remove(force=True)
+                    logger.info(f"Removed timed-out container {container_id}")
                 except DockerException:
                     pass
 
@@ -335,12 +346,12 @@ exit 0
         except Exception as e:
             logger.error(f"Task {task.task_id} failed: {e}", exc_info=True)
 
-            # Kill the container if it exists
+            # Remove the container if it exists
             if container_id:
                 try:
                     client = docker.from_env()
                     container = client.containers.get(container_id)
-                    container.kill()
+                    container.remove(force=True)
                 except DockerException:
                     pass
 
@@ -365,7 +376,7 @@ exit 0
 
     def _run_docker_container(self, task: Task) -> str:
         """
-        Synchronous container execution.
+        Execute the task in a container.
 
         Args:
             task: Task to execute
@@ -379,19 +390,74 @@ exit 0
         if not self._ensure_broker_socket(client):
             raise RuntimeError(f"Broker socket not accessible: {self.broker_socket_path}")
 
-        # Build container args
-        args = self._create_container_config(task)
+        # Remove any existing container with the same name
+        try:
+            existing_container = client.containers.get(f"{task.task_id}")
+            logger.info(f"Removing existing container: {task.task_id}")
+            existing_container.remove(force=True)
+        except docker.errors.NotFound:
+            pass  # No existing container, that's fine
 
-        logger.info(f"Starting container for task {task.task_id}: {' '.join(args[:10])}...")
-        result = subprocess.run(args, capture_output=True, text=True)
+        # Build the container command
+        command = f'''set -euo pipefail
+# Task environment variables
+export TASK_ID="{task.task_id}"
+export TASK_INPUTS={json.dumps(task.inputs, separators=(',', ':'), ensure_ascii=False)}
+echo "Running task: {task.task_id}"
+echo "Inputs: {json.dumps(task.inputs, separators=(',', ':'), ensure_ascii=False)}"
+# Create work directory
+mkdir -p {WORK_DIR}
+cd {WORK_DIR}
+# Launch agent script if provided
+# For now, just echo success
+echo "Task {task.task_id} started"
+echo "Container exit message for logs"
+exit 0
+'''
 
-        if result.returncode != 0:
-            logger.error(f"Container creation failed: {result.stderr}")
-            raise RuntimeError(f"Container creation failed: {result.stderr}")
+        # Build container configuration as dict for Docker SDK
+        container_config = {
+            'image': DOCKER_IMAGE,
+            'entrypoint': '/bin/sh',
+            'command': ['-c', command],
+            'name': f"{task.task_id}",
+            'detach': True,
+            'network': 'none',
+            'read_only': True,
+            'security_opt': ['no-new-privileges'],
+            'mem_limit': '768m',
+            'nano_cpus': 1_000_000_000,  # 1 CPU
+            'pids_limit': 128,
+            'user': f"{USER_UID}:{USER_GID}",
+            'tmpfs': {
+                '/tmp': 'rw,noexec,nosuid',
+                WORK_DIR: 'rw,noexec,nosuid',
+            },
+            'volumes': {
+                self.broker_socket_path: {'bind': '/broker/socket', 'mode': 'ro'},
+            },
+        }
 
-        container_id = result.stdout.strip()
-        logger.info(f"Container {container_id} created for task {task.task_id}")
-        return container_id
+        logger.info(f"Starting container for task {task.task_id}")
+
+        try:
+            # Create container using Docker SDK
+            container = client.containers.create(**container_config)
+
+            logger.info(f"Container {container.id} created for task {task.task_id}")
+
+            # Start the container
+            container.start()
+            logger.debug(f"Container {container.id} started")
+
+            return container.id
+
+        except docker.errors.NotFound as e:
+            logger.error(f"Container creation failed: {e}")
+            raise RuntimeError(f"Container creation failed: image not found or invalid")
+        except docker.errors.APIError as e:
+            logger.error(f"Container API error: {e}")
+            raise RuntimeError(f"Container API error: {e}")
 
     async def run_batch(
         self,
@@ -469,10 +535,14 @@ exit 0
             timed_out_count = sum(1 for r in results if r.timed_out)
             error_log = "\n".join([r.error_log for r in results if r.error_log])
 
+            # Aggregate answers from all task results (concatenate successful ones)
+            aggregated_answers = [r.answer for r in results if r.answer is not None]
+            answer = "\n".join(aggregated_answers) if aggregated_answers else None
+
             return RolloutResult(
                 node_id="executor",
                 task_id=f"batch_{time.time()}",
-                answer=None,
+                answer=answer,
                 score=Score(
                     correct=successful == total,
                     partial=successful / total if total > 0 else 0.0,
