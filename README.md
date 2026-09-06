@@ -99,6 +99,8 @@ Run the seed agent in sandbox mode (no external tools, offline diagnostics):
 python agent_v0.py
 ```
 
+### Integration Tests
+
 Run integration tests:
 
 ```bash
@@ -107,23 +109,17 @@ python -m seds.executor.test_minimal_integration
 
 # Full integration test
 python -m seds.executor.test_runner_integration
-
-# Phase D verification demo
-python -m seds.phase_d.test
 ```
 
 ## User Interaction
 
 ### Running a Self-Improvement Search
 
-To run the full SEDS architecture search, use the selector:
+The Selector is currently used programmatically via `SEDSSelector` class. A working example is provided in `seds/selector_demo.py`:
 
 ```bash
-# Run selector with default parameters
-python -m seds.selector
-
-# Run with custom search duration
-python -m seds.selector --search-duration 3600
+# Run selector demo (programmatically via Python script)
+python -m seds.selector_demo
 ```
 
 The selector manages the entire self-improvement loop:
@@ -134,25 +130,51 @@ The selector manages the entire self-improvement loop:
 4. **Diagnostic Phase (D)**: Analyzes failures with counterfactual replay
 5. **Selection Phase (F)**: Chooses next agent for synthesis based on Pareto optimization
 
+### User-Controlled Mutation
+
+To explore mutation operators manually:
+
+```bash
+# Run synthesizer demo
+python -m seds.synthesizer_demo
+```
+
+The synthesizer provides mutation operators you can inspect manually:
+
+- `prompt_edit`: Modify system prompt, exemplars, prohibition rules
+- `tool_edit`: Modify tool wrappers, schemas, validators
+- `memory_edit`: Modify scratchpad, trace retrieval
+- `orchestration_edit`: Modify verifier stage, self-consistency
+- `efficiency_edit`: Modify tier downgrade, operator fusion
+
 ### Viewing Progress
 
 Metrics and traces are logged with [neatlogs](https://neatlogs.ai):
 
 ```bash
-# View logs in human-readable format
-python -m neatlogs doctor --local --probe --json
+# View logs in JSON format
+python -m neatlogs doctor --local --json
 
-# Generate report (Phase G)
-python -m seds.report.comparison_generator --out results/
+# View logs in human-readable format
+python -m neatlogs doctor --local
 ```
 
-### User-Controlled Mutation
+### Generating Reports (Phase G)
 
-To explore manually without the selector:
+Report generation is part of the architecture search workflow:
 
-```bash
-# Run synthesizer demo
-python -m seds.synthesizer_demo
+```python
+from seds.report.comparison_generator import ComparisonReportGenerator
+
+# Instantiate and use programmatically
+generator = ComparisonReportGenerator(
+    baseline_name="v0",
+    evolved_name="evolved",
+    baseline_results=baseline_scores,
+    evolved_results=evolved_scores,
+)
+report = generator.generate_report()
+generator.save_json(report, Path("results/comparison.json"))
 ```
 
 The synthesizer provides mutation operators you can inspect manually:
@@ -186,7 +208,7 @@ Phase A: Substrate & Broker
 Phase B: Executor
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  seds.executor.runner (DockerExecutor)                                      │
-│    ├─ Preflight gates: py_compile → ruff → import check → AST check        │
+│    ├─ Preflight checks: py_compile → ruff → import check → AST check       │
 │    ├─ 12x concurrent execution pool                                        │
 │    └─ 90s timeout per task                                                 │
 │                                                                             │
@@ -283,7 +305,7 @@ All six phases implemented and functional:
 
 - **Phase B (Executor)**: ✓ Working
   - DockerExecutor with security constraints
-  - Preflight AST checks (kills ~20-30% bad mutations)
+  - Preflight AST checks (expected to filter bad mutations)
 
 - **Phase C (Evaluation & Statistics)**: ✓ Working
   - Paired comparison harness
@@ -304,24 +326,30 @@ All six phases implemented and functional:
   - Pareto frontier optimization
   - Archive tree with rollback ledger
 
+- **Phase G (Report Generation)**: ✓ Working (programmatically via ComparisonReportGenerator)
+  - Comparison reports on accuracy + CIs, reliability, cost, speed
+  - Failure-mode histograms, lineage trees, Pareto plots
+
 ### Known Limitations
 
-1. **Data Privacy**: API keys stored in `.env` file; review before sharing
-2. **Cold Start**: First few generations may be inefficient (requires min 10 evaluations per clade)
-3. **Self-Improving Loop**: Currently iterates over synthetic mutations only; no manual intervention
-4. **Replay Cache Size**: Unlimited in-memory cache (may grow large; consider disk-based eviction)
-5. **Docker Dependency**: Requires Docker runtime for executor phase
-6. **Tier Availability**: Requires access to glm-4-7-flash and gpt-5-nano tiers via API
+1. **Phase D Test Command**: `python -m seds.phase_d.test` fails with ImportError (stale imports in `__init__.py`) -- submodule fix in progress
+2. **Data Privacy**: API keys stored in `.env` file; review before sharing
+3. **Cold Start**: First few generations may be inefficient (requires min 10 evaluations per clade)
+4. **Self-Improving Loop**: Currently iterates over synthetic mutations only; no manual intervention
+5. **Replay Cache Size**: Unlimited in-memory cache (may grow large; consider disk-based eviction)
+6. **Docker Dependency**: Requires Docker runtime for executor phase
+7. **Tier Availability**: Requires access to glm-4-7-flash and gpt-5-nano tiers via API
+8. **CLI Scripts**: No `__main__` blocks in `selector.py` or `comparison_generator.py`; use provided demo scripts instead
 
 ### Documentation
 
-- IMPLEMENTATION_PLAN.md - Original design document (reference only)
-- USER_INTERACTION_PLAN.md - User interaction patterns (reference only)
 - neatlogs-doctor-output.md - NEAT logs diagnostic output
+- `seds/selector_demo.py` - Working example of Selector usage
+- `seds/synthesizer_demo.py` - Working example of Synthesizer usage
 
 ### Roadmap (Future)
 
-- **Phase G**: Final report generation (partially implemented)
+- Fix Phase D test command imports
 - **v0.2.0**: Multi-domain unseen-domain demos
 - **v0.3.0**: Self-improving loop with manual intervention hooks
 - **v0.4.0**: Disk-based replay cache for large-scale searches
