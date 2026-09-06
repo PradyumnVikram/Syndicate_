@@ -32,7 +32,7 @@ class ToolSpec:
     impl: Callable  # executed inside the sandbox; recorded for replay
 
 
-@dataclass
+@dataclass(frozen=True)
 class TaskDomain:
     name: str
     goal: str
@@ -42,7 +42,7 @@ class TaskDomain:
     evaluate: Callable[[Task, str], Score]  # runs HOST-SIDE, outside the container
 
 
-@dataclass(frozen=True)
+@dataclass
 class RolloutResult:
     node_id: str
     task_id: str
