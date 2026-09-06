@@ -125,7 +125,7 @@ def safe_eval_arithmetic(expr: str) -> float | None:
 @neatlogs_span(kind="AGENT")
 def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[str, Any],
              seed: int = 42, rollout_id: str = None, node_id: str = None, task_id: str = None,
-             broker: object = None) -> tuple[str, list[dict]]:
+             broker: object = None) -> tuple[str, list[dict], list[dict]]:
     """Run the domain-parametric ReAct/CoT agent.
 
     Args:
