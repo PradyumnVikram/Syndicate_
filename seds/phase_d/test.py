@@ -3,20 +3,25 @@
 SEDS Phase D Unit Tests
 
 Tests for the Phase D components:
+- ssf: Saliency folding for preserving real errors
+- do_ver: Checkpoint-replay counterfactual verification
 - failure_taxonomy: Failure detection and classification
 - contract_auditor: Tool contract validation
-- ssf: Structured search framework
-- do_ver: Domain verification
 """
 from __future__ import annotations
 
 import unittest
 
 from seds.phase_d.do_ver import (
-    DomainViolation,
-    DomainVerifier,
-    ValidationResult,
+    DoVerCheckpointReplay,
+    MockReplayCache,
+    MockToolCallRecorder,
+    Patch,
+    ReplayResult,
+    VerificationReport,
+    VerificationState,
 )
+
 from seds.phase_d.failure_taxonomy import (
     Failure,
     FailureCategory,
@@ -25,244 +30,91 @@ from seds.phase_d.failure_taxonomy import (
 )
 
 
-class TestDomainViolation(unittest.TestCase):
-    """Test DomainViolation dataclass."""
+class TestVerificationState(unittest.TestCase):
+    """Test VerificationState dataclass."""
 
-    def test_domain_violation_creation(self):
-        """Test creating a domain violation."""
-        violation = DomainViolation(
-            violation_type="test_violation",
-            severity="CRITICAL",
-            task_id="task_123",
-            node_id="node_1",
-            message="Test violation message",
-            details={"key": "value"},
-            remediation="Fix the issue",
+    def test_verification_state_creation(self):
+        """Test creating a verification state."""
+        state = VerificationState(
+            step_index=2,
+            conversation_history=[{"test": "data"}],
         )
 
-        self.assertEqual(violation.violation_type, "test_violation")
-        self.assertEqual(violation.severity, "CRITICAL")
-        self.assertEqual(violation.task_id, "task_123")
-        self.assertEqual(violation.node_id, "node_1")
-        self.assertEqual(violation.message, "Test violation message")
-        self.assertTrue(violation.details)
-        self.assertEqual(violation.remediation, "Fix the issue")
+        self.assertEqual(state.step_index, 2)
+        self.assertEqual(len(state.conversation_history), 1)
 
 
-class TestDomainVerifier(unittest.TestCase):
-    """Test DomainVerifier functionality."""
+class TestPatch(unittest.TestCase):
+    """Test Patch dataclass."""
 
-    def setUp(self):
-        """Set up test fixtures."""
-        self.verifier = DomainVerifier()
+    def test_patch_creation(self):
+        """Test creating a patch."""
+        patch = Patch(
+            type="instruction_patch",
+            target_step=2,
+            description="Fix failing test by removing print statements",
+            details={"target": "user", "new_content": "execute_python(code='assert True')"},
+        )
 
-    def test_verify_domain_compliance_safe_domain(self):
-        """Test compliance verification with a safe domain."""
-        safe_domain = {
-            "name": "Safe Domain",
-            "goal": "Test goal",
-            "tools": [
-                {"name": "tool1", "description": "Tool 1"},
-                {"name": "tool2", "description": "Tool 2"},
+        self.assertEqual(patch.type, "instruction_patch")
+        self.assertEqual(patch.target_step, 2)
+        self.assertEqual(patch.description, "Fix failing test by removing print statements")
+        self.assertEqual(patch.details["target"], "user")
+
+
+class TestReplayResult(unittest.TestCase):
+    """Test ReplayResult dataclass."""
+
+    def test_replay_result_pass(self):
+        """Test creating a passing replay result."""
+        result = ReplayResult(step_index=0, passed=True, error=None)
+
+        self.assertTrue(result.passed)
+        self.assertIsNone(result.error)
+        self.assertEqual(result.step_index, 0)
+
+    def test_replay_result_fail(self):
+        """Test creating a failing replay result."""
+        result = ReplayResult(step_index=0, passed=False, error="RuntimeError: Test failed")
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.error, "RuntimeError: Test failed")
+        self.assertEqual(result.step_index, 0)
+
+
+class TestVerificationReport(unittest.TestCase):
+    """Test VerificationReport dataclass."""
+
+    def test_report_creation(self):
+        """Test creating a verification report."""
+        patch = Patch(
+            type="instruction_patch",
+            target_step=2,
+            description="Test patch",
+            details={"target": "user", "new_content": "execute_python(code='assert True')"},
+        )
+        report = VerificationReport(
+            checkpoint_step=2,
+            patch=patch,
+            success=True,
+            required_passing_replays=3,
+            actual_passing_replays=3,
+            max_debug_rounds=5,
+            actual_debug_rounds=3,
+            replays=[
+                ReplayResult(step_index=0, passed=True, error=None),
+                ReplayResult(step_index=1, passed=True, error=None),
+                ReplayResult(step_index=2, passed=True, error=None),
             ],
-            "reference": "expected answer",
-        }
-
-        safe_spans = [
-            {
-                "span_id": "s1",
-                "node_id": "node1",
-                "kind": "call",
-                "tool_name": "tool1",
-                "inputs": {"arg": "value"},
-                "outputs": {"result": "ok"},
-            },
-        ]
-
-        result = self.verifier.verify_domain_compliance(
-            task_id="test_task",
-            node_id="node1",
-            task_domain=safe_domain,
-            spans=safe_spans,
-            answer="expected answer",
+            recommendation="Patch verified successfully",
         )
 
-        self.assertTrue(result.is_valid)
-        self.assertGreater(result.validation_score, 0.0)
-        self.assertEqual(result.metadata["domains_checked"], [
-            "tool_compliance",
-            "safety",
-            "answer",
-            "span_consistency"
-        ])
-
-    def test_verify_domain_compliance_forbidden_tool(self):
-        """Test compliance verification with a forbidden tool."""
-        domain = {
-            "name": "Restricted Domain",
-            "goal": "Restricted goal",
-            "tools": [
-                {"name": "safe_tool", "description": "Safe tool"},
-            ],
-            "reference": "expected answer",
-        }
-
-        spans = [
-            {
-                "span_id": "s1",
-                "node_id": "node1",
-                "kind": "call",
-                "tool_name": "forbidden_tool",  # This is not allowed!
-                "inputs": {},
-                "outputs": {},
-            },
-        ]
-
-        result = self.verifier.verify_domain_compliance(
-            task_id="test_task",
-            node_id="node1",
-            task_domain=domain,
-            spans=spans,
-            answer="expected answer",
-        )
-
-        self.assertFalse(result.is_valid, f"Expected failure but got valid. Violations: {result.violations}")
-        violations = [v for v in result.violations if v.violation_type == "forbidden_tool"]
-        self.assertTrue(len(violations) > 0, f"No forbidden_tool violations found: {result.violations}")
-        self.assertEqual(violations[0].details["tool_name"], "forbidden_tool")
-        self.assertNotIn("forbidden_tool", violations[0].details["allowed_tools"])
-
-    def test_verify_domain_compliance_safety_violation(self):
-        """Test safety violation detection."""
-        domain = {
-            "name": "Safe Domain",
-            "goal": "Test goal",
-            "tools": [],
-            "reference": "expected answer",
-        }
-
-        spans = [
-            {
-                "span_id": "s1",
-                "node_id": "node1",
-                "kind": "call",
-                "tool_name": "rm",
-                "inputs": {"cmd": "rm -rf /"},
-                "outputs": {},
-            },
-        ]
-
-        result = self.verifier.verify_domain_compliance(
-            task_id="test_task",
-            node_id="node1",
-            task_domain=domain,
-            spans=spans,
-            answer="expected answer",
-        )
-
-        self.assertFalse(result.is_valid)
-        safety_violations = [v for v in result.violations if v.violation_type == "safety_violation"]
-        self.assertTrue(len(safety_violations) > 0)
-        self.assertIn("rm -rf /", safety_violations[0].message)
-
-    def test_verify_domain_compliance_answer_mismatch(self):
-        """Test answer mismatch detection."""
-        domain = {
-            "name": "Test Domain",
-            "goal": "Test goal",
-            "tools": [],
-            "reference": "expected answer",
-        }
-
-        result = self.verifier.verify_domain_compliance(
-            task_id="test_task",
-            node_id="node1",
-            task_domain=domain,
-            spans=[],
-            answer="wrong answer",  # Mismatch!
-        )
-
-        self.assertFalse(result.is_valid, f"Expected failure but got valid. Violations: {result.violations}")
-        answer_violations = [v for v in result.violations if v.violation_type == "answer_mismatch"]
-        self.assertTrue(len(answer_violations) > 0, f"No answer_mismatch violations found: {result.violations}")
-
-    def test_verify_span_integrity(self):
-        """Test span integrity verification."""
-        valid_spans = [
-            {
-                "span_id": "s1",
-                "node_id": "node1",
-                "kind": "call",
-                "tool_name": "tool1",
-                "inputs": {},
-                "outputs": {"result": "ok"},
-            },
-            {
-                "span_id": "s2",
-                "node_id": "node2",
-                "kind": "call",
-                "tool_name": "tool2",
-                "inputs": {},
-                "outputs": {"result": "ok"},
-            },
-        ]
-
-        invalid_spans = [
-            {
-                "span_id": "s1",
-                "node_id": "node1",
-                "kind": "call",
-                "tool_name": "tool1",
-                # Missing outputs!
-            },
-        ]
-
-        valid_result = self.verifier.verify_span_integrity(valid_spans)
-        invalid_result = self.verifier.verify_span_integrity(invalid_spans)
-
-        self.assertTrue(valid_result["is_valid"])
-        self.assertEqual(valid_result["span_count"], 2)
-        self.assertIn("digest", valid_result)
-
-        self.assertTrue(invalid_result["is_valid"])  # Still valid, just missing outputs
-        self.assertEqual(invalid_result["all_spans_complete"], False)
-
-    def test_generate_domain_report(self):
-        """Test domain report generation."""
-        domain = {
-            "name": "Test Domain",
-            "goal": "Test goal",
-            "tools": [
-                {"name": "tool1", "description": "Tool 1"},
-            ],
-            "reference": "expected answer",
-        }
-
-        spans = [
-            {
-                "span_id": "s1",
-                "node_id": "node1",
-                "kind": "call",
-                "tool_name": "tool1",
-                "inputs": {},
-                "outputs": {"result": "ok"},
-            },
-        ]
-
-        result = ValidationResult(
-            is_valid=True,
-            violations=[],
-            validation_score=0.9,
-            metadata={"tool_count": 1},
-        )
-
-        report = self.verifier.generate_domain_report(domain, spans, result)
-
-        self.assertEqual(report["task_name"], "Test Domain")
-        self.assertEqual(report["validation_score"], 0.9)
-        self.assertEqual(report["status"], "PASS")
-        self.assertEqual(report["violations_found"], 0)
-        self.assertEqual(report["tool_usage"]["tool1"], 1)
+        self.assertEqual(report.checkpoint_step, 2)
+        self.assertEqual(report.actual_debug_rounds, 3)
+        self.assertEqual(report.required_passing_replays, 3)
+        self.assertEqual(report.actual_passing_replays, 3)
+        self.assertEqual(report.recommendation, "Patch verified successfully")
+        self.assertEqual(len(report.replays), 3)
 
 
 class TestFailureStatistics(unittest.TestCase):
@@ -273,16 +125,15 @@ class TestFailureStatistics(unittest.TestCase):
         stats = FailureStatistics()
 
         # Count some failures
-        stats.count(FailureCategory.CONTRACT_VIOLATION, FailureSeverity.ERROR)
-        stats.count(FailureCategory.SAFETY_VIOLATION, FailureSeverity.CRITICAL)
-        stats.count(FailureCategory.SAFETY_VIOLATION, FailureSeverity.WARNING)
+        stats.count(FailureCategory.SCHEMA_VIOLATION, FailureSeverity.ERROR)
+        stats.count(FailureCategory.TOOL_MISUSE, FailureSeverity.WARNING)
+        stats.count(FailureCategory.TOOL_MISUSE, FailureSeverity.WARNING)
 
         self.assertEqual(stats.total_failures, 3)
-        self.assertEqual(stats.by_category[FailureCategory.CONTRACT_VIOLATION], 1)
-        self.assertEqual(stats.by_category[FailureCategory.SAFETY_VIOLATION], 2)
+        self.assertEqual(stats.by_category[FailureCategory.SCHEMA_VIOLATION], 1)
+        self.assertEqual(stats.by_category[FailureCategory.TOOL_MISUSE], 2)
         self.assertEqual(stats.by_severity[FailureSeverity.ERROR], 1)
-        self.assertEqual(stats.by_severity[FailureSeverity.CRITICAL], 1)
-        self.assertEqual(stats.by_severity[FailureSeverity.WARNING], 1)
+        self.assertEqual(stats.by_severity[FailureSeverity.WARNING], 2)
 
     def test_top_messages(self):
         """Test top messages functionality."""
@@ -307,8 +158,8 @@ class TestFailureDataclass(unittest.TestCase):
         """Test creating a failure."""
         failure = Failure(
             failure_id="fail_001",
-            category=FailureCategory.SAFETY_VIOLATION,
-            severity=FailureSeverity.CRITICAL,
+            category=FailureCategory.SCHEMA_VIOLATION,
+            severity=FailureSeverity.ERROR,
             task_id="task_123",
             node_id="node_1",
             span_id="s1",
@@ -318,8 +169,8 @@ class TestFailureDataclass(unittest.TestCase):
         )
 
         self.assertEqual(failure.failure_id, "fail_001")
-        self.assertEqual(failure.category, FailureCategory.SAFETY_VIOLATION)
-        self.assertEqual(failure.severity, FailureSeverity.CRITICAL)
+        self.assertEqual(failure.category, FailureCategory.SCHEMA_VIOLATION)
+        self.assertEqual(failure.severity, FailureSeverity.ERROR)
         self.assertEqual(failure.task_id, "task_123")
         self.assertEqual(failure.node_id, "node_1")
         self.assertEqual(failure.span_id, "s1")
@@ -334,8 +185,10 @@ def run_tests():
     suite = unittest.TestSuite()
 
     # Add all test classes
-    suite.addTests(loader.loadTestsFromTestCase(TestDomainViolation))
-    suite.addTests(loader.loadTestsFromTestCase(TestDomainVerifier))
+    suite.addTests(loader.loadTestsFromTestCase(TestVerificationState))
+    suite.addTests(loader.loadTestsFromTestCase(TestPatch))
+    suite.addTests(loader.loadTestsFromTestCase(TestReplayResult))
+    suite.addTests(loader.loadTestsFromTestCase(TestVerificationReport))
     suite.addTests(loader.loadTestsFromTestCase(TestFailureStatistics))
     suite.addTests(loader.loadTestsFromTestCase(TestFailureDataclass))
 
@@ -346,5 +199,4 @@ def run_tests():
 
 
 if __name__ == "__main__":
-    import sys
-    sys.exit(run_tests())
+    exit(run_tests())
