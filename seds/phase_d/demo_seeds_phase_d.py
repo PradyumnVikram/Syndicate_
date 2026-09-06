@@ -350,19 +350,49 @@ def demo_do_ver():
         content_type = "diagnostic" if span.content_type == 'diagnostic' else "compressed"
         print(f"   Span {i+1}: {content_type} - {span.span_id}")
 
-    print("\n✓ DoVer demonstration completed.")
-    print("   In production, this would:")
-    print("   1. Capture state at failure step t=3")
-    print("   2. Apply patch to modify the failed step")
-    print("   3. Replay forward n=3 times")
-    print("   4. Require n≥3 passing replays for verification")
-    print("   5. Cap at 5 debug rounds for incremental verification")
+    # Create a simple patch targeting the failed step (step 3, 0-indexed as 2)
+    patch = Patch(
+        type="instruction_patch",
+        target_step=2,  # Step 3 (1-indexed) is index 2 (0-indexed)
+        description="Fix failing test by removing print statements",
+        details={
+            "target": "user",
+            "new_content": "execute_python(code='assert True')",  # Replace failing test
+        },
+    )
 
-    # Return a report object for the summary
-    report = {
-        "success": True,  # Demo assumes successful verification
-        "recommendation": "Patch successfully applied, failure resolved after 3 replays"
-    }
+    # Run full DoVer pipeline
+    print("\n🔧 Running DoVer checkpoint-replay verification pipeline...")
+    print("   Step 1: Capture state at failure step (t=3)")
+    state = dover.capture_state(trace, failure_step=2)
+
+    print("   Step 2: Splice patch into modified state")
+    modified_state = dover.splice_patch(state, patch)
+
+    print("   Step 3: Replay forward n=3 times")
+    print("   Step 4: Verify patch passes n≥3 replays")
+    print("   Step 5: Cap at 5 debug rounds")
+
+    # Run the full verification
+    report = dover.verify_patch(trace, patch)
+
+    print("\n" + "=" * 70)
+    print("DoVER VERIFICATION RESULTS")
+    print("=" * 70)
+    print(f"  Checkpoint step: t={report.checkpoint_step + 1} (span_id={trace[report.checkpoint_step]['span_id']})")
+    print(f"  Patch type: {patch.type}")
+    print(f"  Patch description: {patch.description}")
+    print(f"  Debug rounds: {report.actual_debug_rounds}/{report.required_passing_replays}")
+    print(f"  Passing replays: {report.actual_passing_replays}/{report.required_passing_replays}")
+    print(f"  Recommendation: {report.recommendation}")
+    if report.replays:
+        print("\n  Replay results:")
+        for i, r in enumerate(report.replays, 1):
+            status = "✓ PASS" if r.passed else "✗ FAIL"
+            error_msg = f" (error: {r.error})" if r.error else ""
+            print(f"    Replay {i}: {status}{error_msg}")
+    print("=" * 70)
+
     return report
 
 
@@ -391,8 +421,8 @@ def main():
     print("=" * 70)
     print(f"SSF Compression: {compression_report['compression_ratio']:.2f}× ({compression_report['size_reduction_percent']:.2f}% reduction)")
     print(f"SSF Met Target: {'✓ Yes' if compression_report['met_target'] else '✗ No'}")
-    print(f"Verification Success: {'✓ Yes' if report.get('success', False) else '✗ No'}")
-    print(f"Patch Recommendation: {report.get('recommendation', 'Not provided')}")
+    print(f"Verification Success: {'✓ Yes' if report.success else '✗ No'}")
+    print(f"Patch Recommendation: {report.recommendation}")
     print("=" * 70)
     print("\n✓ Demo completed successfully!")
     print("=" * 70)

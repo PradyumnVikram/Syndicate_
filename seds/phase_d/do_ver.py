@@ -179,13 +179,6 @@ class DoVerCheckpointReplay:
         Returns:
             Replay result indicating success/failure
         """
-        # Extract modified conversation from state
-        modified_trace = modified_state.conversation_history
-
-        # Replay from target step
-        if patch_target := modified_state.conversation_history.get("patch_target"):
-            pass  # Handled by splice_patch
-
         # In real implementation, this would:
         # 1. Use the broker replay cache for deterministic replay
         # 2. Replay tool calls from the tool-call recorder (free cache hits)
