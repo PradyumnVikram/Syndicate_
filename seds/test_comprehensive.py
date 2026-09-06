@@ -121,6 +121,123 @@ print(f"  Child3: n_success={success3}, n_failure={failure3}")
 print(f"  Parent: n_success={success_parent}, n_failure={failure_parent}, CMP={cmp_parent:.3f}")
 print()
 
+# Test 4: Branching tree (root with two children)
+print("Test 4: Branching hang bug case (root with two children)")
+print("-" * 70)
+selector4 = SEDSSelector(policy_type="THOMPSON", max_tau=10.0, total_steps=100)
+
+root_node = SyntheticNode(
+    node_id="root",
+    parents=(),
+    is_predefined=True,  # Mark root as predefined so it's treated correctly
+)
+selector4.add_to_archive(root_node, MetricsSnapshot(
+    success_rate=0.0,
+    average_reward=0.0,
+    standard_deviation=0.0,
+    coverage_score=0.0,
+    novelty_score=0.0,
+    any_metric={'reward': 0.0}
+))
+
+a_node = SyntheticNode(
+    node_id="a",
+    parents=("root",),
+)
+selector4.add_to_archive(a_node, MetricsSnapshot(
+    success_rate=0.0,
+    average_reward=0.0,
+    standard_deviation=0.0,
+    coverage_score=0.0,
+    novelty_score=0.0,
+    any_metric={'reward': 0.0}
+))
+
+b_node = SyntheticNode(
+    node_id="b",
+    parents=("root",),
+)
+selector4.add_to_archive(b_node, MetricsSnapshot(
+    success_rate=0.0,
+    average_reward=0.0,
+    standard_deviation=0.0,
+    coverage_score=0.0,
+    novelty_score=0.0,
+    any_metric={'reward': 0.0}
+))
+
+print(f"  Parent-child structure: {dict(selector4.archive._children)}")
+
+selector4.evaluate_node("a", 1.0)
+selector4.evaluate_node("b", 0.0)
+
+success_a, failure_a = selector4.clade_backpropagator.get_clade_stats("a")
+success_b, failure_b = selector4.clade_backpropagator.get_clade_stats("b")
+success_root, failure_root = selector4.clade_backpropagator.get_clade_stats("root")
+cmp_root = selector4.clade_backpropagator.get_cmp("root")
+
+print(f"  Node 'a': n_success={success_a}, n_failure={failure_a}, CMP={cmp_a:.3f}")
+print(f"  Node 'b': n_success={success_b}, n_failure={failure_b}, CMP={cmp_b:.3f}")
+print(f"  Root:     n_success={success_root}, n_failure={failure_root}, CMP={cmp_root:.3f}")
+print()
+
+# Test 5: Cycle detection
+print("Test 5: Cycle detection in malformed ancestor chain")
+print("-" * 70)
+selector5 = SEDSSelector(policy_type="THOMPSON", max_tau=10.0, total_steps=100)
+
+root_node = SyntheticNode(
+    node_id="root",
+    parents=(),
+    is_predefined=True,
+)
+selector5.add_to_archive(root_node, MetricsSnapshot(
+    success_rate=0.0,
+    average_reward=0.0,
+    standard_deviation=0.0,
+    coverage_score=0.0,
+    novelty_score=0.0,
+    any_metric={'reward': 0.0}
+))
+
+a_node = SyntheticNode(
+    node_id="a",
+    parents=("root",),
+)
+selector5.add_to_archive(a_node, MetricsSnapshot(
+    success_rate=0.0,
+    average_reward=0.0,
+    standard_deviation=0.0,
+    coverage_score=0.0,
+    novelty_score=0.0,
+    any_metric={'reward': 0.0}
+))
+
+# Create a self-referential node (cycle: c points to itself)
+c_node = SyntheticNode(
+    node_id="c",
+    parents=("c",),  # Self-reference creates immediate cycle
+    is_predefined=True,  # Need to mark as predefined to avoid being added to root's children
+)
+selector5.add_to_archive(c_node, MetricsSnapshot(
+    success_rate=0.0,
+    average_reward=0.0,
+    standard_deviation=0.0,
+    coverage_score=0.0,
+    novelty_score=0.0,
+    any_metric={'reward': 0.0}
+))
+
+print("  Testing ancestor retrieval from self-referential node 'c'")
+
+try:
+    ancestors = selector5.clade_backpropagator._get_ancestors("c", selector5.archive)
+    print("ERROR: Expected ValueError for cycle detection (self-reference)")
+    exit(1)
+except ValueError as e:
+    print(f"  ✓ ValueError raised as expected: {e}")
+
+print()
 print("=" * 70)
 print("All tests completed successfully!")
 print("=" * 70)
