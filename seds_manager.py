@@ -592,11 +592,11 @@ def main():
         else:
             logger.warning("No candidates selected")
 
-        # --- ACCEPTANCE TEST: RE-SCORE BEST CANDIDATE ---
+        # --- PROMOTION GATE: STATISTICAL DECISION ---
         if best_candidate:
-            # Re-evaluate the best candidate to confirm improvement
+            # Re-evaluate best candidate and collect scores for promotion gate
             logger.info(f"\n{'=' * 80}")
-            logger.info(f"ACCEPTANCE TEST: FINAL RE-SCORE OF BEST CANDIDATE")
+            logger.info(f"PROMOTION GATE: STATISTICAL COMPARISON")
             logger.info(f"{'=' * 80}")
 
             # Re-evaluate best candidate
@@ -610,6 +610,7 @@ def main():
             best_val_tasks = domain.val_tasks[:args.evals_per_node]
             best_total_score = 0.0
             best_correct = 0
+            best_scores = []  # Collect scores for promotion gate
 
             for task in best_val_tasks:
                 domain_goal = domain.goal
@@ -627,6 +628,7 @@ def main():
                 score = domain.evaluate(task, answer)
                 best_total_score += score.partial
                 best_correct += 1 if score.correct else 0
+                best_scores.append(score)  # Collect score for promotion gate
 
             best_accuracy = best_correct / len(best_val_tasks)
             best_avg_reward = best_total_score / len(best_val_tasks)
@@ -636,13 +638,24 @@ def main():
                 f"accuracy={best_accuracy:.4f}, avg_reward={best_avg_reward:.4f}"
             )
 
-            # Calculate improvement
-            accuracy_improvement = best_accuracy - baseline_accuracy
-            reward_improvement = best_avg_reward - baseline_avg_reward
+            # Call statistical promotion gate
+            decision, p_value, effect_size, statistics = promote_or_reject(
+                parent_scores=baseline_scores,
+                child_scores=best_scores,
+                domain=domain
+            )
 
-            logger.info(f"\nImprovement Analysis:")
-            logger.info(f"  Accuracy improvement: +{accuracy_improvement:.4f} ({accuracy_improvement*100:.2f}%)")
-            logger.info(f"  Reward improvement: +{reward_improvement:.4f} ({reward_improvement*100:.2f}%)")
+            # Log gate decision
+            logger.info(f"\n{'=' * 80}")
+            logger.info(f"PROMOTION GATE DECISION")
+            logger.info(f"{'=' * 80}")
+            logger.info(f"Decision: {decision}")
+            logger.info(f"Baseline: accuracy={baseline_accuracy:.4f}, avg_reward={baseline_avg_reward:.4f}")
+            logger.info(f"Best Candidate: accuracy={best_accuracy:.4f}, avg_reward={best_avg_reward:.4f}")
+            logger.info(f"p-value: {p_value:.4f}")
+            logger.info(f"effect_size: {effect_size:.4f}")
+            logger.info(f"statistics: {statistics}")
+            logger.info(f"{'=' * 80}")
 
             # Re-score best candidate metrics
             best_metrics = MetricsSnapshot(
@@ -655,8 +668,10 @@ def main():
                     'accuracy': best_accuracy,
                     'avg_reward': best_avg_reward,
                     'iteration': 'final',
-                    'improvement_accuracy': accuracy_improvement,
-                    'improvement_reward': reward_improvement,
+                    'promotion_gate_decision': decision,
+                    'promotion_gate_p_value': p_value,
+                    'promotion_gate_effect_size': effect_size,
+                    'promotion_gate_statistics': statistics,
                     'created_at': datetime.now().isoformat()
                 }
             )
@@ -664,26 +679,18 @@ def main():
             # Add to selector archive
             selector.add_to_archive(best_node, best_metrics, parent_id=seed_node.node_id)
 
-            # Verify self-improvement
-            logger.info(f"\n{'=' * 80}")
-            logger.info(f"ACCEPTANCE TEST: VERIFICATION COMPLETE")
-            logger.info(f"{'=' * 80}")
-            logger.info(f"FINAL DECISION: {'✅ PASS' if (best_accuracy > baseline_accuracy and best_avg_reward > baseline_avg_reward) else '❌ FAIL'}")
-            logger.info(f"Baseline: accuracy={baseline_accuracy:.4f}, avg_reward={baseline_avg_reward:.4f}")
-            logger.info(f"Best Candidate: accuracy={best_accuracy:.4f}, avg_reward={best_avg_reward:.4f}")
-            logger.info(f"Improvement: +{accuracy_improvement:.4f} accuracy, +{reward_improvement:.4f} reward")
-            logger.info(f"{'=' * 80}")
-
-            # Save final verification to progress log
+            # Save promotion gate results to progress log
             if monitor.progress_file.exists():
                 with open(monitor.progress_file, "a") as f:
                     f.write(f"\n{'=' * 80}\n")
-                    f.write(f"FINAL ACCEPTANCE TEST RESULTS\n")
+                    f.write(f"PROMOTION GATE RESULTS\n")
                     f.write(f"{'=' * 80}\n")
+                    f.write(f"Decision: {decision}\n")
                     f.write(f"Baseline: accuracy={baseline_accuracy:.4f}, avg_reward={baseline_avg_reward:.4f}\n")
                     f.write(f"Best Candidate: accuracy={best_accuracy:.4f}, avg_reward={best_avg_reward:.4f}\n")
-                    f.write(f"Improvement: accuracy +{accuracy_improvement:.4f}, reward +{reward_improvement:.4f}\n")
-                    f.write(f"Status: {'PASS - Self-improvement verified' if (best_accuracy > baseline_accuracy and best_avg_reward > baseline_avg_reward) else 'FAIL - No improvement'}\n")
+                    f.write(f"p-value: {p_value:.4f}\n")
+                    f.write(f"effect_size: {effect_size:.4f}\n")
+                    f.write(f"statistics: {statistics}\n")
                     f.write(f"{'=' * 80}\n")
 
         # Check if we should exit (budget exhausted)
