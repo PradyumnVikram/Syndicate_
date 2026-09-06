@@ -124,7 +124,8 @@ def safe_eval_arithmetic(expr: str) -> float | None:
 
 @neatlogs_span(kind="AGENT")
 def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[str, Any],
-             seed: int = 42) -> tuple[str, list[dict]]:
+             seed: int = 42, rollout_id: str = None, node_id: str = None, task_id: str = None,
+             broker: object = None) -> tuple[str, list[dict], list[dict]]:
     """Run the domain-parametric ReAct/CoT agent.
 
     Args:
@@ -132,6 +133,10 @@ def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[st
         domain_tools: List of ToolSpec instances (not json_schema dicts)
         task_input: The task inputs dict
         seed: Deterministic seed for the deterministic tier
+        rollout_id: Optional rollout ID for trace recording
+        node_id: Optional node ID for trace recording
+        task_id: Optional task ID for trace recording
+        broker: Optional Broker instance for tool-call recording
 
     Returns:
         (answer, traces, spans) — the final answer string, trace list, and neatlogs span list
@@ -220,42 +225,128 @@ def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[st
 
     @neatlogs_span(kind="TOOL", name="tool_use")
     def tool_use() -> None:
-        """If we have a calculator tool, extract and use it."""
-        # Step 3: If we have a calculator tool, extract and use it
+        """Generic tool dispatch: extract and execute tool calls."""
+        # Step 3: Generic tool dispatch - find and execute tool calls
         pass
 
     tool_use()
+
+    # Generic tool dispatch: parse assistant message for tool calls
     tools_dict = {t.name: t for t in domain_tools} if domain_tools else {}
 
-    if "calculator" in tools_dict and assistant_msg:
-        calc_match = re.search(r'[\d\s\+\-\*\/\(\)\.]+', assistant_msg)
-        if calc_match:
-            try:
-                expr = calc_match.group().strip()
-                result_val = safe_eval_arithmetic(expr)
-                if result_val is None:
-                    # Safe evaluation failed, skip tool use
-                    pass
-                else:
-                    # Call the tool via the broker
-                    tool_response = deterministic(
-                        messages + [
-                            {"role": "assistant", "content": assistant_msg},
-                            {"role": "user", "content": f"Use the calculator tool with expression: {expr}"},
-                        ],
-                        tools=openai_tools,
-                        seed=seed + 1,
+    @neatlogs_span(kind="TOOL", name="parse_tool_calls")
+    def parse_tool_calls(msg: str, available_tools: list) -> list[tuple[str, dict]]:
+        """Extract tool calls from message as (tool_name, args_dict) tuples."""
+        tool_calls = []
+
+        # Try to parse as JSON first
+        try:
+            msg_clean = msg.strip()
+            if msg_clean.startswith('{') and msg_clean.endswith('}'):
+                msg_obj = json.loads(msg_clean)
+                if isinstance(msg_obj, dict):
+                    # Single tool call format: {"tool": "name", "args": {...}}
+                    if "tool" in msg_obj and "args" in msg_obj:
+                        tool_calls.append((msg_obj["tool"], msg_obj["args"]))
+                    # Multiple tool calls: [{"tool": "name", "args": {...}}, ...]
+                    elif isinstance(msg_obj, list):
+                        for item in msg_obj:
+                            if isinstance(item, dict) and "tool" in item and "args" in item:
+                                tool_calls.append((item["tool"], item["args"]))
+        except (json.JSONDecodeError, KeyError):
+            # Not JSON, continue with natural language parsing
+            pass
+
+        # Natural language fallback: find "tool <name> <args>" patterns
+        if not tool_calls:
+            # Look for patterns like: "tool answer_question with question=Is water wet?"
+            pattern = r'tool\s+(\w+)\s+([^{]+)(?:\s+|$)'
+            matches = re.finditer(pattern, msg, re.IGNORECASE)
+            for match in matches:
+                tool_name = match.group(1).strip()
+                args_str = match.group(2).strip()
+
+                try:
+                    # Try to parse args as key=value pairs
+                    args = {}
+                    if '=' in args_str:
+                        for pair in args_str.split(','):
+                            pair = pair.strip()
+                            if '=' in pair:
+                                key, val = pair.split('=', 1)
+                                key = key.strip()
+                                val = val.strip()
+                                # Try to parse as JSON if needed
+                                if val.startswith('{') and val.endswith('}'):
+                                    try:
+                                        val = json.loads(val)
+                                    except json.JSONDecodeError:
+                                        pass
+                                args[key] = val
+                    tool_calls.append((tool_name, args))
+                except Exception:
+                    continue
+
+        return tool_calls
+
+    # Execute any extracted tool calls
+    if assistant_msg:
+        extracted_calls = parse_tool_calls(assistant_msg, domain_tools)
+        for step_idx, (tool_name, args) in enumerate(extracted_calls):
+            if tool_name not in tools_dict:
+                logger.warning(f"Unknown tool requested: {tool_name}")
+                continue
+
+            tool_spec = tools_dict[tool_name]
+
+            @neatlogs_span(kind="TOOL", name=f"exec_tool_{tool_name}")
+            def execute_tool(tool_spec: ToolSpec, args: dict) -> dict:
+                """Execute tool using ToolSpec.impl."""
+                try:
+                    # Call the tool's implementation
+                    result = tool_spec.impl(**args)
+
+                    @neatlogs_span(kind="TOOL", name="tool_result")
+                    def log_tool_result(result: dict) -> dict:
+                        """Log tool result to trace."""
+                        return result
+
+                    return log_tool_result(result)
+                except Exception as e:
+                    logger.error(f"Tool execution failed: {e}")
+                    return {"error": str(e)}
+
+            result = execute_tool(tool_spec, args)
+
+            # Record tool call to broker if rollout_id and broker are provided
+            if rollout_id and node_id and task_id and broker:
+                try:
+                    broker.record_tool_call(
+                        rollout_id=rollout_id,
+                        node_id=node_id,
+                        task_id=task_id,
+                        tool_name=tool_name,
+                        arguments=args,
+                        result=result,
                     )
-                    traces.append({
-                        "step": 2,
-                        "module": "tool_call",
-                        "inputs": {"tool": "calculator", "expression": expr},
-                        "outputs": tool_response,
-                    })
-                    if tool_response.get("ok"):
-                        assistant_msg = tool_response["response"]["content"]
-            except Exception:
-                pass
+                except Exception:
+                    # Fail silently - trace recording is optional
+                    pass
+
+            # Append tool result as a user message for the next LLM call
+            assistant_msg = f"""Tool {tool_name} executed with result: {json.dumps(result, indent=2)}
+Now continue reasoning based on this result."""
+
+            # Record tool call in trace
+            traces.append({
+                "step": 2 + step_idx,
+                "module": "tool_call",
+                "inputs": {"tool": tool_name, "arguments": args},
+                "outputs": result,
+            })
+
+            # Continue the loop with tool result
+            pass  # The loop will continue after tool execution
 
     @neatlogs_span(kind="CHAIN", name="final_synthesis")
     def final_synthesis() -> None:
@@ -268,7 +359,7 @@ def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[st
     )
     final_synthesis()
     traces.append({
-        "step": 3,
+        "step": len(traces) + 1,
         "module": "thought",
         "inputs": {"previous_response": assistant_msg},
         "outputs": final_response,
@@ -350,6 +441,14 @@ if __name__ == "__main__":
     broker.start()
     time.sleep(0.5)
 
+    # Clear the cache before smoke test (avoid cache hits from previous runs)
+    import sqlite3
+    conn = sqlite3.connect("data/broker.db")
+    conn.execute("DELETE FROM cache")
+    conn.commit()
+    conn.close()
+    print("Cache cleared before smoke test")
+
     print(f"Goal: {domain.goal}")
     print(f"Tools: {[t.name for t in domain.tools]}")
     print("---")
@@ -361,6 +460,10 @@ if __name__ == "__main__":
         domain_tools=[tool_spec],
         task_input={"question": "Calculate 1+1"},
         seed=42,
+        rollout_id="smoke-test-rollout",
+        node_id="smoke-test-node",
+        task_id="smoke-test-task",
+        broker=broker,
     )
     print(f"Agent answer: {answer}")
     print(f"Traces: {len(traces)} steps")
@@ -387,7 +490,7 @@ if __name__ == "__main__":
             {'role': 'user', 'content': 'What is 12345 + 67890?'}
         ],
         'tools': openai_tools,
-        'seed': 42,
+        'seed': 42,  # First call
         'max_tokens': 500,
     })
     print(f"  Real call: ok={result_real.get('ok')}, cached={result_real.get('cached')}, "
@@ -409,13 +512,32 @@ if __name__ == "__main__":
     print(f"  Cached call: ok={result_cached.get('ok')}, cached={result_cached.get('cached')}, "
           f"cost=${result_cached.get('cost_usd'):.8f}, model={result_cached.get('resolved_model')}")
 
-    # Verify exit criterion
-    assert result_real.get("ok") == True, "Real call must succeed"
-    assert result_cached.get("ok") == True, "Cached call must succeed"
+    # Verify exit criterion (these will fail if API returns error or $0 cost)
+    if result_real is None:
+        raise AssertionError("REAL CALL FAILED: result is None")
+    if not result_real.get("ok"):
+        raise AssertionError(f"REAL CALL FAILED: {result_real.get('error', 'Unknown error')}")
+
+    if result_cached is None:
+        raise AssertionError("CACHED CALL FAILED: result is None")
+    if not result_cached.get("ok"):
+        raise AssertionError(f"CACHED CALL FAILED: {result_cached.get('error', 'Unknown error')}")
+
+    assert result_real.get("cached") == False, "First call should not be cached"
     assert result_cached.get("cached") == True, "Second call must be cached"
-    assert result_real.get("cost_usd", 0) > 0, "Real call must have nonzero cost"
-    assert result_cached.get("cost_usd", 0) == 0, "Cached call must cost $0"
-    assert result_real.get("cache_key") == result_cached.get("cache_key"), "Same cache key"
+
+    if result_real.get("cost_usd", 0) <= 0:
+        raise AssertionError(f"REAL CALL MUST HAVE NONZERO COST: got {result_real.get('cost_usd')}")
+
+    if result_cached.get("cost_usd", 0) != 0:
+        raise AssertionError(f"CACHED CALL MUST COST $0: got {result_cached.get('cost_usd')}")
+
+    cache_key_real = result_real.get("cache_key") or ""
+    cache_key_cached = result_cached.get("cache_key") or ""
+    if cache_key_real != cache_key_cached:
+        raise AssertionError(f"Same cache key required, got real={cache_key_real}, cached={cache_key_cached}")
+
+    print("\nAll assertions passed: real call succeeded, cached replay succeeded, costs are correct.")
 
     # Show both log entries
     print("\n=== Broker Call Log (both entries) ===")
