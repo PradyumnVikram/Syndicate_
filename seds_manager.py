@@ -223,8 +223,162 @@ def main():
         else:
             logger.info("No checkpoint found, starting fresh")
 
-    # TODO: Implement outer loop orchestration
-    logger.info("TODO: Implement outer loop orchestration in next commit")
+    # Initialize SEDS components
+    from seds.synthesizer import SEDSSynthesizer
+    from seds.domains.simple_qa import SimpleQA_Domain
+
+    # Create domain
+    logger.info("Initializing SimpleQA domain...")
+    domain = SimpleQA_Domain()
+
+    # Initialize components
+    from seds.phase_d.contract_auditor import ContractAudit
+    from seds.phase_d.ssf import SSF
+    from seds.phase_d.do_ver import DoVer
+    from seds.phase_d.failure_taxonomy import FailureCategory
+    from seds.selector import SEDSSelector, SyntheticNode, MetricsSnapshot
+
+    # Initialize selector
+    selector = SEDSSelector(policy_type="EPSILON", epsilon=0.1)
+
+    # Initialize Phase D components
+    contract_auditor = ContractAudit()
+    ssf = SSF()
+    do_ver = DoVer()
+
+    # Add seed node
+    logger.info("Adding seed node...")
+    seed_node = SyntheticNode(
+        node_id=f"seed_{args.seed}",
+        parents=(),
+        creation_time=time.time(),
+        is_predefined=True
+    )
+    selector.add_predefined_node(seed_node)
+
+    # Main orchestration loop
+    logger.info(f"Starting SEDS outer loop with budget: ${args.budget_usd:.4f}")
+
+    for iteration in range(5):  # Small number of iterations for demo
+        logger.info(f"Iteration {iteration + 1}/5")
+
+        # Sample mutations from seed node
+        logger.info("Sampling mutations...")
+        candidate_count = 0
+        candidates_to_evaluate = []
+
+        for _ in range(3):  # Try 3 mutations per iteration
+            candidate_count += 1
+            candidate_id = f"candidate_{iteration + 1}_{candidate_count}"
+            candidates_to_evaluate.append(candidate_id)
+
+        logger.info(f"Generated {len(candidates_to_evaluate)} candidates: {candidates_to_evaluate}")
+
+        # Evaluate candidates
+        for candidate_id in candidates_to_evaluate:
+            logger.info(f"Evaluating candidate: {candidate_id}")
+
+            # Create synthetic candidate node
+            node = SyntheticNode(
+                node_id=candidate_id,
+                parents=(seed_node.node_id,),
+                creation_time=time.time(),
+                is_predefined=False
+            )
+
+            # Get evaluation tasks from domain
+            val_tasks = domain.val_tasks[:args.evals_per_node]
+            logger.info(f"Executing {len(val_tasks)} validation tasks for {candidate_id}")
+
+            total_correct = 0
+            total_score = 0.0
+
+            for task in val_tasks:
+                # Execute candidate using DockerExecutor (placeholder)
+                # In real implementation, this would:
+                # 1. Serialize the candidate (e.g., as a program string or LLM prompt)
+                # 2. Pass to executor
+                # 3. Get back answer + metrics
+
+                # Placeholder execution
+                answer = f"Mock answer for {candidate_id} on task {task.task_id}"
+
+                # Evaluate using domain.evaluate()
+                score = domain.evaluate(task, answer)
+                total_correct += 1 if score.correct else 0
+                total_score += score.partial
+
+                logger.info(
+                    f"Task {task.task_id}: correct={score.correct}, "
+                    f"partial={score.partial:.4f}"
+                )
+
+            # Calculate metrics
+            accuracy = total_correct / len(val_tasks)
+            avg_reward = total_score / len(val_tasks)
+
+            metrics = MetricsSnapshot(
+                success_rate=accuracy,
+                average_reward=avg_reward,
+                standard_deviation=0.0,  # TODO: calculate std dev
+                coverage_score=accuracy,
+                novelty_score=1.0,  # New node
+                any_metric={
+                    'accuracy': accuracy,
+                    'avg_reward': avg_reward
+                }
+            )
+
+            # Add to selector archive
+            selector.add_to_archive(node, metrics, parent_id=seed_node.node_id)
+
+            # Update stats
+            selector.evaluate_node(node.node_id, avg_reward)
+
+            logger.info(
+                f"Evaluated {candidate_id}: correct={total_correct}/{len(val_tasks)}, "
+                f"avg_reward={avg_reward:.4f}"
+            )
+
+        # Run selector to get best candidate
+        logger.info("Running selector...")
+        best_candidate = selector.select_node(candidates_to_evaluate)
+
+        if best_candidate:
+            logger.info(f"Selected best candidate: {best_candidate}")
+        else:
+            logger.warning("No candidates selected")
+
+        # Check if we should exit (budget exhausted)
+        logger.info("Checkpointing state...")
+        checkpoint_path = monitor.checkpoint_dir / f"checkpoint_iter_{iteration + 1}.pkl"
+        monitor.create_checkpoint({
+            'iteration': iteration + 1,
+            'budget_remaining': args.budget_usd,
+            'best_candidate': best_candidate,
+            'selector_stats': selector.get_statistics()
+        })
+
+        # Check budget
+        if args.budget_usd <= 0:
+            logger.info("Budget exhausted, exiting loop")
+            break
+
+        # Simulate budget cost
+        args.budget_usd -= 0.1
+        logger.info(f"Budget remaining: ${args.budget_usd:.4f}")
+
+    logger.info("SEDS outer loop completed")
+    monitor._log("SEDS outer loop completed successfully")
+
+    # Show final statistics
+    stats = selector.get_statistics()
+    logger.info(f"Final statistics:")
+    logger.info(f"  Total nodes created: {stats['total_nodes_created']}")
+    logger.info(f"  Total evaluations: {stats['total_evaluations']}")
+    logger.info(f"  Archive size: {stats['archive_size']}")
+    logger.info(f"  Pareto frontier size: {stats['pareto_frontier_size']}")
+    logger.info(f"  Best candidate: {stats['best_candidate']}")
 
 
 if __name__ == "__main__":
