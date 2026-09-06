@@ -23,7 +23,7 @@ from seds.executor.tracedb import get_connection
 try:
     from dotenv import load_dotenv
     _env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
-    load_dotenv(_env_path)
+    load_dotenv(_env_path, override=True)  # Override stale environment variables
 except ImportError:
     _env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
     if os.path.exists(_env_path):
@@ -184,9 +184,20 @@ class ReplayCache:
         conn.close()
         if row is None:
             return None
+        # Load resolved_model from the cache entry (it's stored but not returned by get())
+        conn2 = sqlite3.connect(self.db_path)
+        cursor = conn2.execute(
+            "SELECT resolved_model FROM cache WHERE cache_key = ?",
+            (key,)
+        )
+        row2 = cursor.fetchone()
+        resolved_model = row2[0] if row2 else "unknown"
+        conn2.close()
+
         return {
             "cache_key": key,
             "cached": True,
+            "resolved_model": resolved_model,
             "response": json.loads(row[0]),
             "input_tokens": row[1],
             "output_tokens": row[2],

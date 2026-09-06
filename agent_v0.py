@@ -441,6 +441,14 @@ if __name__ == "__main__":
     broker.start()
     time.sleep(0.5)
 
+    # Clear the cache before smoke test (avoid cache hits from previous runs)
+    import sqlite3
+    conn = sqlite3.connect("data/broker.db")
+    conn.execute("DELETE FROM cache")
+    conn.commit()
+    conn.close()
+    print("Cache cleared before smoke test")
+
     print(f"Goal: {domain.goal}")
     print(f"Tools: {[t.name for t in domain.tools]}")
     print("---")
@@ -504,13 +512,32 @@ if __name__ == "__main__":
     print(f"  Cached call: ok={result_cached.get('ok')}, cached={result_cached.get('cached')}, "
           f"cost=${result_cached.get('cost_usd'):.8f}, model={result_cached.get('resolved_model')}")
 
-    # Verify exit criterion
-    assert result_real.get("ok") == True, "Real call must succeed"
-    assert result_cached.get("ok") == True, "Cached call must succeed"
+    # Verify exit criterion (these will fail if API returns error or $0 cost)
+    if result_real is None:
+        raise AssertionError("REAL CALL FAILED: result is None")
+    if not result_real.get("ok"):
+        raise AssertionError(f"REAL CALL FAILED: {result_real.get('error', 'Unknown error')}")
+
+    if result_cached is None:
+        raise AssertionError("CACHED CALL FAILED: result is None")
+    if not result_cached.get("ok"):
+        raise AssertionError(f"CACHED CALL FAILED: {result_cached.get('error', 'Unknown error')}")
+
+    assert result_real.get("cached") == False, "First call should not be cached"
     assert result_cached.get("cached") == True, "Second call must be cached"
-    assert result_real.get("cost_usd", 0) > 0, "Real call must have nonzero cost"
-    assert result_cached.get("cost_usd", 0) == 0, "Cached call must cost $0"
-    assert result_real.get("cache_key") == result_cached.get("cache_key"), "Same cache key"
+
+    if result_real.get("cost_usd", 0) <= 0:
+        raise AssertionError(f"REAL CALL MUST HAVE NONZERO COST: got {result_real.get('cost_usd')}")
+
+    if result_cached.get("cost_usd", 0) != 0:
+        raise AssertionError(f"CACHED CALL MUST COST $0: got {result_cached.get('cost_usd')}")
+
+    cache_key_real = result_real.get("cache_key") or ""
+    cache_key_cached = result_cached.get("cache_key") or ""
+    if cache_key_real != cache_key_cached:
+        raise AssertionError(f"Same cache key required, got real={cache_key_real}, cached={cache_key_cached}")
+
+    print("\nAll assertions passed: real call succeeded, cached replay succeeded, costs are correct.")
 
     # Show both log entries
     print("\n=== Broker Call Log (both entries) ===")
