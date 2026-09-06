@@ -220,7 +220,13 @@ def agent_v0(domain_goal: str, domain_tools: list[ToolSpec], task_input: dict[st
         "outputs": final_response,
     })
 
-    answer = final_response.get("response", {}).get("content", str(assistant_msg)) if final_response.get("ok") else str(assistant_msg)
+    # Fix: content may exist but be None/empty after tool-call turns (glm returns content:null)
+    # Explicitly fallback to assistant_msg when content is falsy
+    answer = str(assistant_msg)
+    if final_response.get("ok"):
+        content = final_response.get("response", {}).get("content")
+        if content:
+            answer = content
 
     return answer, traces
 
