@@ -448,15 +448,15 @@ class Broker:
 
     def _compute_cost(self, model: str, input_tokens: int, output_tokens: int,
                       reasoning_tokens: int, cached_tokens: int) -> float:
-        # Realistic pricing per million tokens (in USD)
+        # Pricing per million tokens (in USD)
         if model == "glm-4-7-flash":
-            input_price = 0.03  # $30 per 1M input tokens
-            output_price = 0.03  # $30 per 1M output tokens
+            input_price = 0.03  # $0.03 per 1M input tokens
+            output_price = 0.03  # $0.03 per 1M output tokens
             return (input_tokens * input_price + output_tokens * output_price) / 1_000_000
         elif model == "gpt-5-nano":
-            input_price = 0.10  # $100 per 1M input tokens
-            output_price = 0.30  # $300 per 1M output tokens
-            reasoning_price = 0.05  # $50 per 1M reasoning tokens
+            input_price = 0.10  # $0.10 per 1M input tokens
+            output_price = 0.30  # $0.30 per 1M output tokens
+            reasoning_price = 0.05  # $0.05 per 1M reasoning tokens
             return (input_tokens * input_price + output_tokens * output_price +
                     reasoning_tokens * reasoning_price) / 1_000_000
         return 0.001
