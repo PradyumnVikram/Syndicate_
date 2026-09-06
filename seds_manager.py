@@ -61,6 +61,96 @@ DEFAULT_ARCHIVE_DIR = "agent_archive"
 LOG_FILE = Path("/tmp/seds_progress/W7-outer-loop.md")
 
 
+class BudgetManager:
+    """Budget-aware resource manager for SEDS iterations."""
+
+    def __init__(self, initial_budget: float, checkpoint_file: Optional[Path] = None):
+        """
+        Initialize budget manager.
+
+        Args:
+            initial_budget: Initial budget in USD
+            checkpoint_file: Path to checkpoint file for resume functionality
+        """
+        self.initial_budget = initial_budget
+        self.current_budget = initial_budget
+        self.checkpoint_file = checkpoint_file
+        self.history: List[Dict[str, Any]] = []
+        self._load_checkpoint()
+
+    def _load_checkpoint(self) -> None:
+        """Load budget state from checkpoint file if it exists."""
+        if self.checkpoint_file and self.checkpoint_file.exists():
+            try:
+                with open(self.checkpoint_file, 'rb') as f:
+                    checkpoint_data = pickle.load(f)
+                    self.current_budget = checkpoint_data.get('current_budget', self.current_budget)
+                    self.history = checkpoint_data.get('history', [])
+                    logger.info(
+                        f"Loaded checkpoint: budget={self.current_budget:.4f}, "
+                        f"history_len={len(self.history)}"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to load checkpoint: {e}")
+
+    def checkpoint(self) -> None:
+        """Save current budget state to checkpoint file."""
+        if self.checkpoint_file:
+            checkpoint_data = {
+                'current_budget': self.current_budget,
+                'history': self.history
+            }
+            try:
+                with open(self.checkpoint_file, 'wb') as f:
+                    pickle.dump(checkpoint_data, f)
+                logger.info(f"Checkpointed budget: ${self.current_budget:.4f}")
+            except Exception as e:
+                logger.error(f"Failed to checkpoint: {e}")
+
+    def allocate(self, cost: float) -> bool:
+        """
+        Allocate budget cost.
+
+        Args:
+            cost: Cost to allocate
+
+        Returns:
+            True if budget sufficient, False otherwise
+        """
+        if self.current_budget >= cost:
+            self.current_budget -= cost
+            self.history.append({
+                'timestamp': time.time(),
+                'cost': cost,
+                'remaining': self.current_budget
+            })
+            return True
+        else:
+            logger.warning(
+                f"Budget insufficient: requested ${cost:.4f}, "
+                f"remaining ${self.current_budget:.4f}"
+            )
+            return False
+
+    def get_remaining(self) -> float:
+        """Get remaining budget."""
+        return self.current_budget
+
+    def is_exhausted(self) -> bool:
+        """Check if budget is exhausted."""
+        return self.current_budget <= 0
+
+    def get_progress(self) -> Dict[str, Any]:
+        """Get budget progress information."""
+        return {
+            'initial_budget': self.initial_budget,
+            'current_budget': self.current_budget,
+            'spent': self.initial_budget - self.current_budget,
+            'spend_percentage': (self.initial_budget - self.current_budget) / self.initial_budget * 100,
+            'remaining_percentage': (self.current_budget / self.initial_budget) * 100
+        }
+
+
 class SEDSMonitor:
     """Progress monitoring and checkpointing."""
 
@@ -175,6 +265,12 @@ def main():
         help=f"Directory for checkpoints (default: {DEFAULT_CHECKPOINT_DIR})",
     )
     parser.add_argument(
+        "--budget-checkpoint",
+        type=str,
+        default=None,
+        help="Path for budget checkpoint file (for resuming budget state)",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Resume from latest checkpoint if available",
@@ -256,11 +352,21 @@ def main():
     )
     selector.add_predefined_node(seed_node)
 
-    # Main orchestration loop
+    # Initialize budget manager
+    budget_manager = BudgetManager(
+        initial_budget=args.budget_usd,
+        checkpoint_file=Path(args.budget_checkpoint) if args.budget_checkpoint else None
+    )
     logger.info(f"Starting SEDS outer loop with budget: ${args.budget_usd:.4f}")
 
+    # Main orchestration loop
     for iteration in range(5):  # Small number of iterations for demo
         logger.info(f"Iteration {iteration + 1}/5")
+
+        # Check if budget exhausted
+        if budget_manager.is_exhausted():
+            logger.info("Budget exhausted, exiting loop")
+            break
 
         # Sample mutations from seed node
         logger.info("Sampling mutations...")
@@ -273,6 +379,13 @@ def main():
             candidates_to_evaluate.append(candidate_id)
 
         logger.info(f"Generated {len(candidates_to_evaluate)} candidates: {candidates_to_evaluate}")
+
+        # Allocate budget for this iteration
+        if not budget_manager.allocate(0.1):  # Simulate 0.1 USD cost per iteration
+            logger.warning("Budget allocation failed, exiting")
+            break
+
+        logger.info(f"Budget remaining: ${budget_manager.get_remaining():.4f}")
 
         # Evaluate candidates
         for candidate_id in candidates_to_evaluate:
@@ -308,14 +421,39 @@ def main():
                 total_correct += 1 if score.correct else 0
                 total_score += score.partial
 
+                # Run Phase D diagnostics
+                failure_category = None
+                if not score.correct:
+                    # Run contract audit on failures
+                    failure_report = contract_auditor.audit_contract(
+                        agent_answer=answer,
+                        reference_answer=task.reference or "",
+                        task_context=task.to_dict() if hasattr(task, 'to_dict') else str(task)
+                    )
+                    failure_category = failure_report['category']
+
+                # Run SSF (Semantic Saliency Folder) to identify failure modes
+                ssf_features = ssf.analyze(
+                    task_input=task.to_dict() if hasattr(task, 'to_dict') else str(task),
+                    candidate_id=candidate_id,
+                    failure_category=failure_category
+                )
+
                 logger.info(
                     f"Task {task.task_id}: correct={score.correct}, "
-                    f"partial={score.partial:.4f}"
+                    f"partial={score.partial:.4f}, "
+                    f"failure_category={failure_category}, "
+                    f"ssf_features={ssf_features['primary_failure_mode']}"
                 )
 
             # Calculate metrics
             accuracy = total_correct / len(val_tasks)
             avg_reward = total_score / len(val_tasks)
+
+            # Calculate failure analysis
+            failure_modes = ssf.compute_overall_failure_modes(
+                candidate_id=candidate_id
+            )
 
             metrics = MetricsSnapshot(
                 success_rate=accuracy,
@@ -325,7 +463,8 @@ def main():
                 novelty_score=1.0,  # New node
                 any_metric={
                     'accuracy': accuracy,
-                    'avg_reward': avg_reward
+                    'avg_reward': avg_reward,
+                    'failure_modes': failure_modes
                 }
             )
 
@@ -351,25 +490,43 @@ def main():
 
         # Check if we should exit (budget exhausted)
         logger.info("Checkpointing state...")
+
+        # Save budget checkpoint
+        budget_manager.checkpoint()
+
+        # Save general checkpoint
         checkpoint_path = monitor.checkpoint_dir / f"checkpoint_iter_{iteration + 1}.pkl"
         monitor.create_checkpoint({
             'iteration': iteration + 1,
-            'budget_remaining': args.budget_usd,
+            'budget_remaining': budget_manager.get_remaining(),
+            'budget_progress': budget_manager.get_progress(),
             'best_candidate': best_candidate,
             'selector_stats': selector.get_statistics()
         })
 
-        # Check budget
-        if args.budget_usd <= 0:
+        # Check budget again (after checkpoint)
+        if budget_manager.is_exhausted():
             logger.info("Budget exhausted, exiting loop")
             break
 
-        # Simulate budget cost
-        args.budget_usd -= 0.1
-        logger.info(f"Budget remaining: ${args.budget_usd:.4f}")
+        logger.info(f"Budget remaining: ${budget_manager.get_remaining():.4f}")
 
-    logger.info("SEDS outer loop completed")
-    monitor._log("SEDS outer loop completed successfully")
+        logger.info("SEDS outer loop completed")
+        monitor._log("SEDS outer loop completed successfully")
+
+        # Final budget checkpoint
+        budget_manager.checkpoint()
+        logger.info(f"Final budget progress: {budget_manager.get_progress()}")
+
+        # Show final Pareto frontier
+        logger.info(f"Final Pareto frontier:")
+        for snapshot in selector.pareto_frontier.get_frontier():
+            logger.info(
+                f"  Node {snapshot.node_id}: "
+                f"success_rate={snapshot.success_rate:.2f}, "
+                f"coverage_score={snapshot.coverage_score:.2f}, "
+                f"novelty_score={snapshot.novelty_score:.2f}"
+            )
 
     # Show final statistics
     stats = selector.get_statistics()
